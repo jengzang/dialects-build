@@ -17,17 +17,17 @@ def main(args):
         convert_all_to_tsv()
 
     # 2️⃣ 寫入資料庫（admin 或 user）
-    if not args.type or 'chars' in args.type:  # 👈 空 or 有 chars 才寫
+    if not args.type or 'needchars' in args.type:  # 👈 空 or 有 chars 才寫
         if args.user == 'admin':
             write_to_sql(
                 yindian=True,
-                write_chars_db='chars' in args.type,
+                write_chars_db='needchars' in args.type,
                 append='append' in args.type
             )
         elif args.user == 'user':
             write_to_sql(
                 yindian='only',
-                write_chars_db='chars' in args.type,
+                write_chars_db='needchars' in args.type,
                 append='append' in args.type
             )
 
@@ -61,15 +61,15 @@ if __name__ == "__main__":
     parser.add_argument(
         '-t', '--type',
         nargs='*',
-        choices=['convert', 'chars', 'query', 'sync', 'phonology', 'append'],
+        choices=['convert', 'chars', 'query', 'sync', 'needchars', 'append'],
         default=[],
         help=(
             "⚙️ 要執行的處理功能（可多選）：\n"
             "  convert      → 字表轉TSV\n"
-            "  chars        → 寫入中古音數據庫\n"
+            "  needchars     → 需要寫入中古音數據庫\n"
             "  query        → 寫入方言查詢數據庫\n"
             "  sync         → 儲存方言標記\n"
-            "  phonology    → 寫入中古地位表\n"
+            "  chars    → 寫入中古地位表\n"
             "  append       → 寫入方式為添加\n"
         )
     )
