@@ -4,6 +4,14 @@
 
 # 📘 字表预处理工具
 
+### 相關倉庫一覽
+
+[![後端 - Dialects Backend](https://img.shields.io/badge/GitHub-Repo-Backend-blue?logo=github)](https://github.com/jengzang/dialects-backend)
+[![前端 - Dialects JS Frontend](https://img.shields.io/badge/GitHub-Repo-Frontend-yellow?logo=github)](https://github.com/jengzang/dialects-js-frontend)
+
+[![Backend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-backend&theme=dark)](https://github.com/jengzang/dialects-backend)
+[![Frontend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-js-frontend&theme=dark)](https://github.com/jengzang/dialects-js-frontend)
+
 ## 安装依赖
 
 ```bash
