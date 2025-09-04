@@ -257,7 +257,7 @@ def extract_all_from_files(file_path: str, get_tone: bool = True, preserve_empty
 
 
 # tsv_file = r"C:\Users\joengzaang\myfiles\杂文件\声韵处理\processed\東莞東坑.tsv"
-# tsv_file = r"C:\Users\joengzaang\PycharmProjects\process_phonology\data\yindian\藤縣.tsv"
+# tsv_file = r"C:\Users\joengzaang\PycharmProjects\chars\data\yindian\東莞莞城.tsv"
 # result = extract_all_from_files(tsv_file)
 # pd.set_option('display.max_rows', None)  # 显示所有行
 # pd.set_option('display.max_columns', None)  # 显示所有列

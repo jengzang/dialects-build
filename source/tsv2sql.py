@@ -604,6 +604,10 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False):
     if yindian:
         if yindian == 'only':
             tsv_paths_yindian, *_ = get_tsvs(output_dir=YINDIAN_DATA_DIR)
+            tsv_paths = [
+                p for p in tsv_paths_yindian
+                if os.path.splitext(os.path.basename(p))[0] not in exclude_files
+            ]
         else:
             tsv_paths_yindian, *_ = get_tsvs(output_dir=YINDIAN_DATA_DIR)
             tsv_paths_mine, *_ = get_tsvs()

@@ -17,7 +17,7 @@ def main(args):
         convert_all_to_tsv()
 
     # 2️⃣ 寫入資料庫（admin 或 user）
-    if not args.type or 'needchars' in args.type:  # 👈 空 or 有 chars 才寫
+    if not args.type or 'needchars' in args.type:  # 👈 空 or 有 needchars 才寫
         if args.user == 'admin':
             write_to_sql(
                 yindian=True,
