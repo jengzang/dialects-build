@@ -14,12 +14,6 @@
 - **[前端 - Dialects JS Frontend](https://github.com/jengzang/dialects-js-frontend)**  
   [![Frontend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-js-frontend&theme=dark)](https://github.com/jengzang/dialects-js-frontend)
 
-
-### 仓库卡片展示
-
-[![Backend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-backend&theme=dark)](https://github.com/jengzang/dialects-backend)  
-[![Frontend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-js-frontend&theme=dark)](https://github.com/jengzang/dialects-js-frontend)
-
 ---
 
 
