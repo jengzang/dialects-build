@@ -1,16 +1,27 @@
 ---
-不羁的方言比较——地理语言学小站
+# 不羁的方言比较——地理语言学小站
+---
+**[方音圖鑒](https://dialects.yzup.top/)**  
+  访问「方音圖鑒」首页：[🔗 dialects.yzup.top](https://dialects.yzup.top/)
+
+## 📘 字表预处理工具
+
+### 相关仓库一览
+
+- **[后端 - Dialects Backend](https://github.com/jengzang/dialects-backend)**  
+  [![Backend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-backend&theme=dark)](https://github.com/jengzang/dialects-backend)
+
+- **[前端 - Dialects JS Frontend](https://github.com/jengzang/dialects-js-frontend)**  
+  [![Frontend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-js-frontend&theme=dark)](https://github.com/jengzang/dialects-js-frontend)
+
+
+### 仓库卡片展示
+
+[![Backend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-backend&theme=dark)](https://github.com/jengzang/dialects-backend)  
+[![Frontend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-js-frontend&theme=dark)](https://github.com/jengzang/dialects-js-frontend)
+
 ---
 
-# 📘 字表预处理工具
-
-### 相關倉庫一覽
-
-[![後端 - Dialects Backend](https://img.shields.io/badge/GitHub-Repo-Backend-blue?logo=github)](https://github.com/jengzang/dialects-backend)
-[![前端 - Dialects JS Frontend](https://img.shields.io/badge/GitHub-Repo-Frontend-yellow?logo=github)](https://github.com/jengzang/dialects-js-frontend)
-
-[![Backend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-backend&theme=dark)](https://github.com/jengzang/dialects-backend)
-[![Frontend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-js-frontend&theme=dark)](https://github.com/jengzang/dialects-js-frontend)
 
 ## 安装依赖
 
