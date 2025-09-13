@@ -533,9 +533,9 @@ def process_phonology_excel(
     os.makedirs("data", exist_ok=True)
 
     # 欄位設置
-    columns_needed = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "單字"]
+    columns_needed = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式", "單字", "釋義"]
     rename_map = {"單字": "漢字"}
-    write_columns = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "漢字"]
+    write_columns = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式", "漢字", "釋義"]
 
     # 讀取 Excel
     try:
@@ -555,7 +555,7 @@ def process_phonology_excel(
     df['num'] = df.index + 2  # Excel 行號
 
     # 檢查其他欄位是否有缺值（不包含"漢字"與"num"）
-    check_cols = [col for col in df.columns if col not in ["漢字", "num"]]
+    check_cols = [col for col in df.columns if col not in ["漢字", "num", "釋義"]]
     invalid_rows = df[df[check_cols].isnull().any(axis=1)]
 
     # 有效列
@@ -582,8 +582,7 @@ def process_phonology_excel(
         conn = sqlite3.connect(db_file)
         df_unique.drop(columns=["num"]).to_sql("characters", conn, if_exists="replace", index=False)
         # ➤ 建立索引
-        # index_columns = [col for col in write_columns if col != "漢字"]
-        index_columns = [col for col in write_columns]
+        index_columns = [col for col in write_columns if col != "釋義"]  # 排除「釋義」
         index_columns.append("多地位標記")
         for col in index_columns:
             index_name = f"idx_characters_{col}"

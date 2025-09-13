@@ -40,8 +40,9 @@ def main(args):
         sync_dialects_flags()
 
     # 5️⃣ 寫入中古地位表
-    if 'phonology' in args.type:
+    if 'chars' in args.type:
         process_phonology_excel()
+
 
 # === 命令列參數設定 ===
 if __name__ == "__main__":

@@ -4,16 +4,8 @@ import re
 import pandas as pd
 
 from common.constants import replace_data
-
-# === 替换规则表 ===
-replace_df = pd.DataFrame(replace_data, columns=['to_replace', 'replacement', 'condition']).astype(str)
-
-# === 文件读取路径 ===
-base_path = os.path.dirname(os.path.abspath(__file__))
-input_path = os.path.join(base_path, "jyut2ipa.xlsx")
-df = pd.read_excel(input_path, dtype=str, keep_default_na=False)
-print(f"✅ 已读取文件: {input_path}, 共 {len(df)} 条记录")
-
+# === 粤拼拆分 ===
+vowels = set('aeuioy')
 
 # === 清理并提取注释 ===
 def clean_and_extract_notes_fixed(text):
@@ -25,10 +17,6 @@ def clean_and_extract_notes_fixed(text):
     cleaned = re.sub(r'[？?＊*]', '', text)
     cleaned = ''.join(c for c in cleaned if c not in chinese or c == '或')
     return cleaned, notes
-
-
-# === 粤拼拆分 ===
-vowels = set('aeuioy')
 
 
 def split_pinyin(pinyin):
@@ -164,5 +152,12 @@ def jyut2ipa():
 
 
 if __name__ == "__main__":
-    jyut2ipa()
+    # === 替换规则表 ===
+    replace_df = pd.DataFrame(replace_data, columns=['to_replace', 'replacement', 'condition']).astype(str)
 
+    # === 文件读取路径 ===
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    input_path = os.path.join(base_path, "jyut2ipa.xlsx")
+    df = pd.read_excel(input_path, dtype=str, keep_default_na=False)
+    print(f"✅ 已读取文件: {input_path}, 共 {len(df)} 条记录")
+    jyut2ipa()

@@ -13,7 +13,7 @@ SUPPLE_DB_PATH = os.path.join(BASE_DIR, "data", "supplements.db")
 SUPPLE_DB_URL = f"sqlite:///{SUPPLE_DB_PATH}"
 
 # 字表寫入SQL路徑依賴
-APPEND_PATH = os.path.join(BASE_DIR,  "data", "dependency", "信息.xlsx")
+APPEND_PATH = os.path.join(BASE_DIR,  "data", "dependency", "jengzang補充.xlsx")
 HAN_PATH = os.path.join(BASE_DIR,  "data", "dependency", "漢字音典字表檔案（長期更新）.xlsx")
 PHO_TABLE_PATH = os.path.join(BASE_DIR,  "data", "dependency", "聲韻.xlsx")
 RAW_DATA_DIR = os.path.join(BASE_DIR,  "data", "raw")
