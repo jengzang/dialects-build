@@ -119,6 +119,18 @@ def import_excel_sheet_columns_to_sqlite_via_tk(
     # --- 写入 SQLite ---
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    # 设置 WAL 相关文件权限为 777
+    try:
+        os.chmod(db_path, 0o777)
+        wal_path = db_path + "-wal"
+        shm_path = db_path + "-shm"
+        if os.path.exists(wal_path):
+            os.chmod(wal_path, 0o777)
+        if os.path.exists(shm_path):
+            os.chmod(shm_path, 0o777)
+    except Exception:
+        pass  # 权限设置失败不影响主流程
 
     try:
         if if_exists not in {"replace", "append", "fail"}:

@@ -527,7 +527,6 @@ def check_all(xlsx_paths, five=False):
         # 🔁 第三階段：處理零聲母
         df = extract_all_from_files(path, False, True)
         # print(df)
-        # print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
 
         # 過濾声母為 "/" 且韵母以 i/y/u 開頭
         filtered_df = df[(df["声母"] == "/") & (df["韵母"].str.startswith(tuple(["i", "y", "u"])))]

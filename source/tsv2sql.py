@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from common.constants import exclude_files
-from source.change_coordinates import bd09togcj02
+from source.change_coordinates import GPSUtil
 from common.config import HAN_PATH, APPEND_PATH, QUERY_DB_PATH, DIALECTS_DB_PATH, CHARACTERS_DB_PATH, PHO_TABLE_PATH, \
     MISSING_DATA_LOG, WRITE_INFO_LOG, YINDIAN_DATA_DIR
 from source.get_new import extract_all_from_files
@@ -72,7 +72,7 @@ def build_dialect_database():
     # --- 處理經緯度轉換 ---
     def convert_coordinates(df):
         """
-        對 '經緯度' 列進行坐標轉換，忽略空值
+        對 '經緯度' 列進行坐標轉換：BD-09 (百度) → WGS-84 (GPS)
         """
         new_coordinates = []
         for coords in df['經緯度']:
@@ -84,12 +84,12 @@ def build_dialect_database():
             # 確保 coords 是字符串類型
             coords = str(coords).strip()
 
-            # 分割經緯度
+            # 分割經緯度（格式：經度,緯度）
             bd_lon, bd_lat = map(float, re.split(r'[，,]', coords))
 
-            # 使用轉換函數
-            converted_coords = bd09togcj02(bd_lon, bd_lat)
-            new_coordinates.append(f"{converted_coords[0]},{converted_coords[1]}")  # 轉換後的坐標以逗號分隔
+            # BD-09 → WGS-84 轉換（注意：GPSUtil 參數順序是 lat, lon）
+            wgs_lat, wgs_lon = GPSUtil.bd09_to_gps84(bd_lat, bd_lon)
+            new_coordinates.append(f"{wgs_lon},{wgs_lat}")  # 存儲格式：經度,緯度
 
         # 更新 '經緯度' 列
         df['經緯度'] = new_coordinates
@@ -176,9 +176,15 @@ def build_dialect_database():
         final_df.to_sql("dialects", conn, if_exists="replace", index=False)
         # 加索引
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_dialects_code ON dialects(簡稱);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_zone ON dialects(音典分區);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_zone ON dialects(地圖集二分區);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_yindian_zone ON dialects(音典分區);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_atlas_zone ON dialects(地圖集二分區);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_flag ON dialects(存儲標記);")
+        # 🚀 新增：复合索引，优化常见查询 WHERE 簡稱 = ? AND 存儲標記 = ?
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_code_flag ON dialects(簡稱, 存儲標記);")
+        # 🚀 优化：音典分区+存储标记复合索引（用于模糊匹配查询）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_query_partition_storage ON dialects(音典分區, 存儲標記);")
+        # 🚀 优化：地图集分区+存储标记复合索引（用于match_input_tip.py）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_query_atlas_storage ON dialects(地圖集二分區, 存儲標記);")
 
     print(f"✅ SQLite 資料庫 `dialects_query.db` 已建立，dialects 表已更新完成。")
 
@@ -186,6 +192,11 @@ def build_dialect_database():
 def process_all2sql(tsv_paths, db_path, append=False):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+
+    # 🚀 优化：设置 SQLite 性能参数
+    cursor.execute("PRAGMA synchronous = OFF")  # 关闭同步写入
+    cursor.execute("PRAGMA journal_mode = MEMORY")  # 使用内存日志
+    cursor.execute("PRAGMA temp_store = MEMORY")  # 临时数据存内存
 
     if not append:
         cursor.execute("DROP TABLE IF EXISTS dialects")
@@ -253,7 +264,10 @@ def process_all2sql(tsv_paths, db_path, append=False):
             df["聲調"] = df["声调"].astype(str).str.strip()
             df["註釋"] = df["註釋"].astype(str).str.strip() if "註釋" in df.columns else ""
 
+            # 🚀 优化：批量插入，大幅提升性能
             insert_count = 0
+            batch_data = []
+
             for _, row in df.iterrows():
                 char = row["漢字"]
                 phonetic = row["音節"]
@@ -271,14 +285,15 @@ def process_all2sql(tsv_paths, db_path, append=False):
                     with open(MISSING_DATA_LOG, "a", encoding="utf-8") as f:
                         f.write(log_message + "\n")
 
-                cursor.execute('''
+                batch_data.append((tsv_name, char, phonetic, cons, vow, tone, note, ""))
+                insert_count += 1
+
+            # 批量插入所有数据
+            if batch_data:
+                cursor.executemany('''
                     INSERT INTO dialects (簡稱, 漢字, 音節, 聲母, 韻母, 聲調, 註釋, 多音字)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    tsv_name, char, phonetic,
-                    cons, vow, tone, note, ""
-                ))
-                insert_count += 1
+                ''', batch_data)
 
             conn.commit()
             log_lines.append(f"{tsv_name} 寫入了 {insert_count} 筆。")
@@ -291,11 +306,37 @@ def process_all2sql(tsv_paths, db_path, append=False):
 
     conn.close()
     print(f"\n📦 所有資料已寫入：{db_path}")
+
+    # 🚀 优化：重新连接并恢复正常模式，然后创建索引
     conn_all = sqlite3.connect(db_path)
+    cursor = conn_all.cursor()
+
+    # 恢复正常同步模式
+    cursor.execute("PRAGMA synchronous = NORMAL")
+    cursor.execute("PRAGMA journal_mode = DELETE")
+
     # 創建索引，加快查詢速度
     print("※ 開始創建索引 ※")
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_loc ON dialects(簡稱);")
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_char ON dialects(漢字);")
+    # 🚀 基础单列索引（FastAPI 后端频繁查询的字段）
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr ON dialects(簡稱);")
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_char ON dialects(漢字);")
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_syllable ON dialects(音節);")
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_polyphonic ON dialects(多音字);")  # ✅ 新增：多音字查询
+
+    # 🚀 复合索引，优化多字段查询和 GROUP BY
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_char_abbr ON dialects(漢字, 簡稱);")  # FastAPI 最重要
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_char ON dialects(簡稱, 漢字);")
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_char_syllable ON dialects(簡稱, 漢字, 音節);")
+
+    # 🚀 【优先级高】用于 phonology2status.py 的特征统计查询（GROUP BY 簡稱, 聲母/韻母/聲調）
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_features ON dialects(簡稱, 聲母, 韻母, 聲調);")
+
+    # 🚀 【优先级高】用于 match_input_tip.py 的存储标记过滤
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_storage ON dialects(存儲標記, 簡稱);")
+
+    # 🚀 【优先级高】优化多音字查询（WHERE 多音字='1' AND 簡稱=? AND 漢字 IN ...）
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_polyphonic_full ON dialects(多音字, 簡稱, 漢字);")
+
     conn_all.commit()
 
     # print("\n📊 寫入總結：")
@@ -307,9 +348,16 @@ def process_all2sql(tsv_paths, db_path, append=False):
     # print(f"\n📝 已寫入紀錄至：{log_path}")
 
 
-# 舊版代碼，直接刪除整個數據庫並更新(快，但是电脑会特别卡）
+# 舊版代碼，直接刪除整個數據庫並更新（快，但是电脑会特别卡）
+# 🚀 优化版本：减少不必要的输出，提升性能
 def process_polyphonic_annotations(db_path: str):
     conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # 🚀 优化：设置 SQLite 性能参数
+    cursor.execute("PRAGMA synchronous = OFF")
+    cursor.execute("PRAGMA journal_mode = MEMORY")
+
     df = pd.read_sql_query("SELECT * FROM dialects ORDER BY 簡稱, 漢字", conn)
 
     print(f"🔍 資料庫讀取完成，共 {len(df)} 筆")
@@ -318,12 +366,13 @@ def process_polyphonic_annotations(db_path: str):
     merged = []
     grouped = df.groupby(["簡稱", "漢字", "音節"])
 
-    previous_short_name = None  # 用来保存上一次的地点信息
+    previous_short_name = None
     count_num = 1
     for (short_name, char, syllable), group in grouped:
-        if short_name != previous_short_name:  # 当地点变化时触发
-            print(f"正在處理：{short_name}(第{count_num}個)")  # 输出调试信息，地点发生变化
+        if short_name != previous_short_name:
+            print(f"正在處理：{short_name}(第{count_num}個)")
             count_num += 1
+            previous_short_name = short_name
 
         unique_phonetics = group[["聲母", "韻母", "聲調"]].drop_duplicates()
         if len(unique_phonetics) == 1:
@@ -332,42 +381,31 @@ def process_polyphonic_annotations(db_path: str):
             combined_note = ";".join(notes) if notes else ""
 
             base_row = group.iloc[0].copy()
-            # if base_row["註釋"] != combined_note:
-            #     print(f"📝 合併註釋：{char} / {syllable} → 「{combined_note}」")
             base_row["註釋"] = combined_note
             merged.append(base_row)
         else:
-            print(f"⚠️ 音節相同但聲韻調不同：{char} / {syllable}")
+            # 🚀 优化：减少警告输出
+            # print(f"⚠️ 音節相同但聲韻調不同：{char} / {syllable}")
             for _, row in group.iterrows():
                 merged.append(row)
-        previous_short_name = short_name  # 更新之前的地点
 
     merged_df = pd.DataFrame(merged)
     print(f"✅ 合併後剩餘 {len(merged_df)} 筆")
 
     # 二階段：標記多音字（音節不同）
-    # final = []
     grouped2 = merged_df.groupby(["簡稱", "漢字"])
 
-    # for (short_name, char), group in grouped2:
-    #     if len(group["音節"].unique()) > 1:
-    #         # print(f"🔁 多音字標記：{short_name} / {char}")
-    #         group["多音字"] = "1"
-    #         # for _, row in group.iterrows():
-    #         # print("  ➤", dict(row))
-    #     else:
-    #         group["多音字"] = ""
-    #     final.append(group)
-    # final_df = pd.concat(final).reset_index(drop=True)
-
-    # 使用 `transform()` 判断是否多音字
+    # 🚀 优化：使用 transform() 批量处理，避免循环
     merged_df['多音字'] = grouped2['音節'].transform(lambda x: '1' if x.nunique() > 1 else '')
     final_df = merged_df
 
-    # print(f"💾 清空並重建資料表 dialects，共 {len(final_df)} 筆")
-    cursor = conn.cursor()
+    # 🚀 优化：一次性重建表（比逐行UPDATE快得多）
     cursor.execute("DROP TABLE IF EXISTS dialects")
     final_df.to_sql("dialects", conn, index=False)
+
+    # 恢复正常模式
+    cursor.execute("PRAGMA synchronous = NORMAL")
+    cursor.execute("PRAGMA journal_mode = DELETE")
 
     conn.commit()
     conn.close()
@@ -470,11 +508,7 @@ def sync_dialects_flags(all_db_path=DIALECTS_DB_PATH,
                         log_path=CHARACTERS_DB_PATH):
     # 讀取 dialects_all.db 中所有唯一簡稱
     conn_all = sqlite3.connect(all_db_path)
-    # 創建索引，加快查詢速度
-    print("※ 開始創建索引 ※")
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_loc ON dialects(簡稱);")
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_char ON dialects(漢字);")
-    conn_all.commit()
+    # 🚀 优化：索引已在 process_all2sql 中创建，此处无需重复
     cursor_all = conn_all.cursor()
     cursor_all.execute("SELECT DISTINCT 簡稱 FROM dialects")
     all_tags = set(row[0] for row in cursor_all.fetchall())
@@ -533,9 +567,9 @@ def process_phonology_excel(
     os.makedirs("data", exist_ok=True)
 
     # 欄位設置
-    columns_needed = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式", "單字", "釋義"]
+    columns_needed = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式", "單字", "釋義", "多聲母", "多等", "多韻", "多調"]
     rename_map = {"單字": "漢字"}
-    write_columns = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式", "漢字", "釋義"]
+    write_columns = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式", "漢字", "釋義", "多聲母", "多等", "多韻", "多調"]
 
     # 讀取 Excel
     try:
@@ -581,15 +615,61 @@ def process_phonology_excel(
     try:
         conn = sqlite3.connect(db_file)
         df_unique.drop(columns=["num"]).to_sql("characters", conn, if_exists="replace", index=False)
-        # ➤ 建立索引
-        index_columns = [col for col in write_columns if col != "釋義"]  # 排除「釋義」
-        index_columns.append("多地位標記")
-        for col in index_columns:
-            index_name = f"idx_characters_{col}"
-            conn.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON characters({col});")
+        print("➤ 開始建立索引...")
+
+        # 1. 定义那 12 个需要与"汉字"组合的核心属性
+        # 这些列将建立 (Col, 漢字) 的联合索引
+        composite_group = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式"]
+        triple_indexes = [
+            ("攝", "等"),  # -> (攝, 等, 漢字)
+            ("攝", "呼"),  # -> (攝, 呼, 漢字)
+            ("攝", "母"),  # -> (攝, 母, 漢字)
+            ("清濁", "調")  # -> (清濁, 調, 漢字)
+        ]
+        for col1, col2 in triple_indexes:
+            index_name = f"idx_characters_{col1}_{col2}_hanzi"
+            # 創建三列索引
+            sql = f"CREATE INDEX IF NOT EXISTS {index_name} ON characters({col1}, {col2}, 漢字);"
+            conn.execute(sql)
+            print(f"   [三列索引] ({col1}, {col2}, 漢字)")
+
+        # 🚀 【优先级中】用于 status_arrange_pho.py 的分组统计（組→母→攝→韻→調）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_hierarchy ON characters(組, 母, 攝, 韻, 調);")
+        print(f"   [五列索引] (組, 母, 攝, 韻, 調) - 用于分组统计")
+
+        # 🚀 【优先级中】用于等级查询（等=三的特殊处理）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_grade ON characters(等, 漢字);")
+        print(f"   [复合索引] (等, 漢字) - 用于等级查询")
+
+        # 2. 准备所有需要处理的列（排除“釋義”，加上“多地位標記”）
+        all_index_candidates = [col for col in write_columns if col != "釋義"]
+        all_index_candidates.append("多地位標記")
+
+        for col in all_index_candidates:
+            if col == "漢字":
+                # 【特殊处理】汉字本身必须有单列索引
+                # 用于：WHERE 漢字 = '東'
+                index_name = "idx_characters_漢字"
+                conn.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON characters(漢字);")
+                print(f"   [单列索引] {col}")
+
+            elif col in composite_group:
+                # 【核心优化】这 12 列建立联合索引：(属性, 漢字)
+                # 用于：WHERE 韻 = '東' (同时覆盖了 SELECT 漢字)
+                # 注意：不再建立 col 的单列索引，因为联合索引的最左前缀已经包含了单列查询功能
+                index_name = f"idx_characters_{col}_hanzi"
+                conn.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON characters({col}, 漢字);")
+                print(f"   [联合索引] ({col}, 漢字)")
+
+            else:
+                # 【其他列】保留单列索引
+                # 包括：多聲母, 多等, 多韻, 多調, 多地位標記
+                index_name = f"idx_characters_{col}"
+                conn.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON characters({col});")
+                print(f"   [单列索引] {col}")
 
         conn.close()
-        print("✅ 成功寫入 SQLite，總筆數：", len(df_unique))
+        print("✅ 索引優化完成！")
     except Exception as e:
         print(f"❌ SQLite 寫入失敗: {e}")
 
@@ -635,10 +715,8 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False):
     print("🚀 開始導入資料...")
     process_all2sql(tsv_paths, db_path, append)
     print("开始处理重复行以及标记多音字")
-    if append:
-        process_polyphonic_annotations_new(DIALECTS_DB_PATH, append=True)
-    else:
-        process_polyphonic_annotations(DIALECTS_DB_PATH)
+    # 🚀 优化：统一使用旧版函数（一次性重建表更快）
+    process_polyphonic_annotations(DIALECTS_DB_PATH)
     print("开始寫入存儲標記")
     sync_dialects_flags()
 

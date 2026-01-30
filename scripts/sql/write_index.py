@@ -35,6 +35,19 @@ def add_index_and_list_indexes(
 
     conn = sqlite3.connect(db_path)
     try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        # 设置 WAL 相关文件权限为 777
+        try:
+            import os
+            os.chmod(db_path, 0o777)
+            wal_path = db_path + "-wal"
+            shm_path = db_path + "-shm"
+            if os.path.exists(wal_path):
+                os.chmod(wal_path, 0o777)
+            if os.path.exists(shm_path):
+                os.chmod(shm_path, 0o777)
+        except Exception:
+            pass  # 权限设置失败不影响主流程
         cur = conn.cursor()
 
         cols_sql = ", ".join([f'"{c}"' for c in columns])
@@ -92,16 +105,16 @@ def add_index_and_list_indexes(
 
 # 添加普通索引（单列）
 add_index_and_list_indexes(
-    db_path="data/my.db",
-    table_name="my_table",
-    columns=["姓名"],
+    db_path="data/characters.db",
+    table_name="characters",
+    columns=["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式", "漢字", "釋義", "多聲母", "多等", "多韻", "多調", "多地位標記"],
     index_type="NORMAL"
 )
 
-# 添加唯一索引（复合）
-add_index_and_list_indexes(
-    db_path="data/my.db",
-    table_name="my_table",
-    columns=["省", "市", "县"],
-    index_type="UNIQUE"
-)
+# # 添加唯一索引（复合）
+# add_index_and_list_indexes(
+#     db_path="data/my.db",
+#     table_name="my_table",
+#     columns=["省", "市", "县"],
+#     index_type="UNIQUE"
+# )
