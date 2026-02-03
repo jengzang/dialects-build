@@ -328,8 +328,10 @@ def process_all2sql(tsv_paths, db_path, append=False):
     conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_char ON dialects(簡稱, 漢字);")
     conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_char_syllable ON dialects(簡稱, 漢字, 音節);")
 
-    # 🚀 【优先级高】用于 phonology2status.py 的特征统计查询（GROUP BY 簡稱, 聲母/韻母/聲調）
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_features ON dialects(簡稱, 聲母, 韻母, 聲調);")
+    # 🚀 【优先级高】用于音韵特征查询（分别优化聲母/韻母/聲調查询）
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_initial ON dialects(簡稱, 聲母);")
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_final ON dialects(簡稱, 韻母);")
+    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_tone ON dialects(簡稱, 聲調);")
 
     # 🚀 【优先级高】用于 match_input_tip.py 的存储标记过滤
     conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_storage ON dialects(存儲標記, 簡稱);")
