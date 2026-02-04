@@ -1,27 +1,34 @@
-# 方音圖鑒字表預處理工具 Chars
+---
+# 不羁的方言比较——地理语言学小站
+---
+
+**[方音圖鑒](https://dialects.yzup.top/)**
+访问「方音圖鑒」首页：[🔗 dialects.yzup.top](https://dialects.yzup.top/)
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 > 漢字方言音典數據預處理系統，支持多種字表格式轉換、音韻數據提取與 SQLite 數據庫構建
 
-**[方音圖鑒](https://dialects.yzup.top/)** | 访问首页：[🔗 dialects.yzup.top](https://dialects.yzup.top/)
-
 ---
 
 ## 📚 目錄
 
 - [項目簡介](#項目簡介)
+- [相關倉庫](#相關倉庫)
 - [核心功能](#核心功能)
 - [快速開始](#快速開始)
 - [安裝指南](#安裝指南)
 - [使用說明](#使用說明)
+  - [主腳本：build.py](#主腳本buildpy)
+  - [輔助腳本：utils.py](#輔助腳本utilspy)
 - [數據庫架構](#數據庫架構)
 - [配置文件](#配置文件)
 - [數據處理流程](#數據處理流程)
 - [常見問題](#常見問題)
 - [性能優化](#性能優化)
-- [關聯項目](#關聯項目)
+- [許可證](#許可證)
+- [致謝](#致謝)
 
 ---
 
@@ -55,6 +62,18 @@
 - **優化前**：~120 分鐘
 - **優化後**：~15-20 分鐘
 - **提速**：6-8 倍
+
+---
+
+## 相關倉庫
+
+### 相關倉庫一覽
+
+- **[後端 - Dialects Backend](https://github.com/jengzang/dialects-backend)**
+  [![Backend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-backend&theme=dark)](https://github.com/jengzang/dialects-backend)
+
+- **[前端 - Dialects JS Frontend](https://github.com/jengzang/dialects-js-frontend)**
+  [![Frontend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-js-frontend&theme=dark)](https://github.com/jengzang/dialects-js-frontend)
 
 ---
 
@@ -120,6 +139,12 @@ python build.py -u admin -t convert needchars sync chars
 
 ## 安裝指南
 
+### 安裝依賴
+
+```bash
+pip install -r requirements.txt
+```
+
 ### 方式一：使用 pip
 
 ```bash
@@ -157,24 +182,36 @@ pip install opencc==1.1.9
 
 ### 主腳本：build.py
 
-`build.py` 是主要的預處理工具，支持多種操作模式。
+該工具用於 **字表的預處理**，包括：
 
-#### 基本語法
+1. excel/word各類格式的字表轉tsv
+2. 提取轉好的tsv數據每個字、音對應的聲母、韻母、聲調，寫入數據庫
+3. 最後生成三個數據庫：
+   - characters.db: 存每個漢字的中古地位
+   - dialects_all.db: 存每個方言點聲韻調信息
+   - dialects_query.db: 記錄每個地點的經緯度、行政區劃、調值、分區等信息
+
+#### 🔧 使用方法
 
 ```bash
-python build.py [-u USER] [-t TYPE [TYPE ...]]
+python build.py [選項]
 ```
 
 #### 參數說明
 
 ##### `-u, --user`：用戶類型
 
+指定寫入的數據庫類型。可以是 admin 或 user。默認是 admin。
+
 | 值 | 說明 | 包含數據 |
-|----|------|---------|
-| `admin` | 管理員模式（預設） | `data/processed/` + `data/yindian/` |
+|----|------|---------| `admin` | 管理員模式（預設） | `data/processed/` + `data/yindian/` |
 | `user` | 普通用戶模式 | 僅 `data/yindian/` |
 
+具體區別是，user只寫入yindian文件夾下的數據，用於我的網站區分普通用戶和管理員數據庫。如果是自用，默認admin即可。
+
 ##### `-t, --type`：處理類型（可多選）
+
+選擇要執行的功能，可以同時寫多個。可選值：
 
 | 值 | 功能 | 說明 |
 |----|------|------|
@@ -216,7 +253,16 @@ python build.py -u admin -t query sync
 
 ### 輔助腳本：utils.py
 
+# 📘 字表處理腳本
+
+此腳本用於運行 `scripts` 路徑下的不同程序，包括：
+- 檢查字表格式和錯字
+- 粵拼轉 IPA
+- 合併字表
+
 `utils.py` 提供數據檢查、格式轉換等輔助功能。
+
+#### 使用方法
 
 ```bash
 python utils.py -t [CHECK|jyut|MERGE]
@@ -243,7 +289,55 @@ python utils.py -t CHECK
 - 自動轉換為音典格式並校對
 - 提供指令替換漢字、刪行、替換音標等
 
-![檢查範例](data/images/img_004.png)
+支持輸入各種格式：一字一行（音典格式）、音節-對應字（跳跳老鼠格式）、#韻-聲母-聲調（縣志格式）；*.xlsx *.xls *.doc *.docx *.tsv等格式。會把所有字表自動轉換成音典格式，並進行校對。
+
+會進行五重校對：
+
+1. 是否有不合規範的漢字字符；是否有缺聲調的情況；音標內是否有不被允許的字符
+
+![img](data/images/img_004.png)
+
+由於我之前是基於命令行交互的，所以更改文檔內容採用的是指令形式。之後如果做html前端的話，會採用更加直觀的方式。目前已有指令可以替換漢字、刪行、替換單個音標、批量替換音標。
+
+![img](data/images/img_005.png)
+
+2. 分別按照入聲、舒聲整理所有的聲調，觀察是否有不符合的調值
+
+![img](data/images/img_006.png)
+
+如果有需要替換的，可以通過r/s分別替換入聲、舒聲。
+
+![img](data/images/img_007.png)
+
+正確輸入指令後，會自動更改excel，進行替換。
+
+![img](data/images/img_008.png)
+
+3. 處理零聲母。查詢是否有聲母為空、但是韻母以u/i/y開頭的音節。展示出來每一行，等待用戶處理
+
+![img](data/images/img_009.png)
+
+![img](data/images/img_010.png)
+
+用戶可以輸入行號，選擇要替換的音標。
+
+![img](data/images/img_011.png)
+
+輸入指令，替換即刻生效
+
+![img](data/images/img_012.png)
+
+4. 整理並展示該點的所有聲母、韻母的類別以及數量，看是否有填錯/不該有的對立。
+
+![img](data/images/img_013.png)
+
+可以輸入一個或多個音標，匹配查詢，輸出該音位對應的所有行。然後也可以像處理零聲母一樣，輸入行號並選擇替換內容。
+
+![img](data/images/img_014.png)
+
+5. 展示訓讀、出韻情況。按照聲鈕、韻攝整理聲母、韻母，輸出所有出韻情況（只有一個字且占比小於8%，或占比小於3%）。
+
+![img](data/images/img_015.png)
 
 ##### jyut - 粵拼轉 IPA
 
@@ -255,7 +349,9 @@ python utils.py -t jyut
 
 基於自定規則表，將粵拼（jyutping）批量轉換為 IPA。
 
-![粵拼轉換範例](data/images/img_016.png)
+![img](data/images/img_016.png)
+
+![img](data/images/img_017.png)
 
 ##### MERGE - 字表合併
 
@@ -272,7 +368,13 @@ python utils.py -t MERGE
 - 自動處理多音字（相同讀音保留一個，不同讀音用分號分隔）
 - 將注釋添加到批注中
 
-![合併範例](data/images/img_018.png)
+接收用戶輸入的一個或多個文件（一字一行格式），按照參考表裡（主表）漢字的順序進行合併，如果部分資料存在主表以外的漢字（這些漢字存在於補充表裡），會把這些字補充到最後。如果不需要補充多餘的字，把補充表留空即可。
+
+![img](data/images/img_018.png)
+
+如果字表裡的一個字對應了多行，如果每行讀音相同，則輸出單元格只保留一個讀音，如果讀音不同則用分號;分隔。如果某行有注釋，注釋均會被添加到批注中。
+
+![img](data/images/img_019.png)
 
 ---
 
@@ -385,16 +487,15 @@ CREATE INDEX idx_characters_呼 ON characters(呼);
 
 **位置**：`data/dependency/jengzang補充.xlsx`
 
-**Sheet：檔案**  
+**Sheet：檔案**
 
+## 填表說明
 
+如果需要轉換自己的字表，需要先填寫 data/dependency/信息.xlsx
 
+![01](data/images/01.png)
 
-
-
-
-##  
-必填字段說明：
+### 必填字段說明：
 
 | 字段 | 必填 | 說明 | 範例 |
 |------|------|------|------|
@@ -420,15 +521,35 @@ CREATE INDEX idx_characters_呼 ON characters(呼);
    - ☑：字表填的是調值（如 33, 42）
    - ☐：字表填的是調類（如 陰平、陽去）
 
+這些字表格式，是來源於漢字音典的標準。音典的處理代碼也開源了，但我沒太看懂，就自己寫了一份。
+
+具體可以參考 data/raw 路徑下的格式。
+
 **字聲韻調註列名格式說明**（僅音典格式需要）：
 
-\`\`\`
+對於音典格式，需要填入列號。第一列是"字"，第二列是"音"，第三列是"注釋"。如果第二列用"（）()"括住，則代表使用粵拼。
+
+```
 # 格式：列號用逗號分隔
 A,B,C          # 表示 A=漢字, B=音標, C=註釋
 
 # 粵拼識別：用括號包裹
 A,(G),H        # 表示 A=漢字, G=粵拼, H=註釋
-\`\`\`
+```
+
+如果你的Excel列名能與這些對應，則可以不填列號：
+
+```
+col_map = {
+    '漢字': ['漢字_程序改名', '單字', '#漢字', '单字', '漢字', 'phrase', '汉字'],
+    '音標': ['IPA_程序改名', 'IPA', 'ipa', '音標', 'syllable'],
+    '解釋': ['注釋_程序改名', '注释', '注釋', '解釋', 'notes']
+}
+```
+
+![02](data/images/02.png)
+
+![03](data/images/03.png)
 
 ---
 
@@ -436,9 +557,9 @@ A,(G),H        # 表示 A=漢字, G=粵拼, H=註釋
 
 ### 完整流程圖
 
-\`\`\`
+```
 原始字表 → 格式轉換 → 數據提取 → 數據庫寫入 → 查詢庫構建 → 完成
-\`\`\`
+```
 
 ### 性能優化
 
@@ -465,15 +586,6 @@ A,(G),H        # 表示 A=漢字, G=粵拼, H=註釋
 ### 粵拼轉換失敗
 
 **解決**：確認配置中"拼音"列為"粵拼"，"字聲韻調註列名"用括號標記粵拼列
-
----
-
-## 關聯項目
-
-### 相關倉庫一覽
-
-- **[後端 - Dialects Backend](https://github.com/jengzang/dialects-backend)**
-- **[前端 - Dialects JS Frontend](https://github.com/jengzang/dialects-js-frontend)**
 
 ---
 
