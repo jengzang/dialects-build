@@ -9,7 +9,13 @@ from common.constants import col_map, vowel_pattern, TONE_MAP
 from source.match_fromdb import get_tsvs
 
 
-def extract_all_from_files(file_path: str, get_tone: bool = True, preserve_empty_rows: bool = False) -> pd.DataFrame:
+def extract_all_from_files(file_path: str, get_tone: bool = True, preserve_empty_rows: bool = False, query_db_path: str = None) -> pd.DataFrame:
+    from common.config import QUERY_DB_PATH
+
+    # 如果沒有指定 query_db_path，使用默認值
+    if query_db_path is None:
+        query_db_path = QUERY_DB_PATH
+
     def build_tone_map_yindian(result):
         tone_map = {}
 
@@ -31,8 +37,8 @@ def extract_all_from_files(file_path: str, get_tone: bool = True, preserve_empty
         return tone_map
 
     if get_tone:
-        shortname = get_tsvs(single=file_path)[1]
-        result = search_tones(locations=shortname, regions=None, get_raw=True)
+        shortname = get_tsvs(single=file_path, query_db_path=query_db_path)[1]
+        result = search_tones(locations=shortname, regions=None, get_raw=True, db_path=query_db_path)
         tone_map_yindian = build_tone_map_yindian(result)
     else:
         tone_map_yindian = TONE_MAP

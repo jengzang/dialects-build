@@ -2,6 +2,7 @@ import os
 import re
 import sqlite3
 import traceback
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -9,16 +10,37 @@ import pandas as pd
 from common.constants import exclude_files
 from source.change_coordinates import GPSUtil
 from common.config import HAN_PATH, APPEND_PATH, QUERY_DB_PATH, DIALECTS_DB_PATH, CHARACTERS_DB_PATH, PHO_TABLE_PATH, \
-    MISSING_DATA_LOG, WRITE_INFO_LOG, YINDIAN_DATA_DIR
+    MISSING_DATA_LOG, WRITE_INFO_LOG, YINDIAN_DATA_DIR, UPDATE_DATA_DIR
 from source.get_new import extract_all_from_files
 from source.match_fromdb import get_tsvs
+from common.config import (QUERY_DB_ADMIN_PATH, QUERY_DB_USER_PATH,
+                           DIALECTS_DB_ADMIN_PATH, DIALECTS_DB_USER_PATH)
 
+def build_dialect_database(mode='admin'):
+    """
+    構建方言查詢數據庫
 
-def build_dialect_database():
-    # han_file = Path(HAN_CSV_PATH)
+    Args:
+        mode: 'admin' 或 'user'
+
+    Returns:
+        list: TSV 路徑列表（用於後續寫入數據）
+    """
+    from common.config import (QUERY_DB_ADMIN_PATH, QUERY_DB_USER_PATH,
+                               HAN_PATH, APPEND_PATH)
+    from source.match_fromdb import scan_tsv_with_conflict_resolution
+    from common.s2t import simplified2traditional, traditional2simplified
+
+    # 1. 確定數據庫路徑
+    if mode == 'admin':
+        sqlite_db = Path(QUERY_DB_ADMIN_PATH)
+    else:  # user
+        sqlite_db = Path(QUERY_DB_USER_PATH)
+
+    print(f"\n 構建 {mode} 模式數據庫：{sqlite_db}")
+
     han_file = Path(HAN_PATH)
     other_file = Path(APPEND_PATH)
-    sqlite_db = Path(QUERY_DB_PATH)
 
     # --- 欄位對應 ---
     tone_map = {
@@ -30,7 +52,7 @@ def build_dialect_database():
         "[6]陽去": "T6陽去",
         "[7]陰入": "T7陰入",
         "[8]陽入": "T8陽入",
-        "[9]其他調": "T9其他調",
+        "[9]變調": "T9其他調",
         "[10]輕聲": "T10輕聲"
     }
 
@@ -38,7 +60,7 @@ def build_dialect_database():
         "省/自治區/直轄市": "省",
         "地區/市/州": "市",
         "縣/市/區": "縣",
-        "鄕/鎭/街道": "鎮",
+        "鄉/鎮/街道": "鎮",
         "村/社區/居民點": "行政村",
         "自然村": "自然村"
     }
@@ -50,22 +72,22 @@ def build_dialect_database():
         "語言", "簡稱", "音典排序", "地圖集二分區", "音典分區", "字表來源（母本）", "方言島",
         "存儲標記", "經緯度", "地圖級別",
         *geo_map.keys(),
-        *tone_map.keys()
+        *tone_map.keys(),
+        # "isUser"  # 添加 isUser 列
     ]
 
-    # --- 讀取 Append_files.xlsx.xlsx ---
+    # --- 讀取 Append_files.xlsx ---
     df_other = pd.read_excel(other_file, sheet_name="檔案", header=0)
     df_other.columns = df_other.columns.str.strip()
-    df_other["存儲標記"] = ""  # ✅ 補上這一列
+    df_other["存儲標記"] = ""  #  補上這一列
     df_other = df_other[[col for col in required_columns if col in df_other.columns]].copy()
     df_other = df_other.rename(columns=rename_map)
 
     # --- 讀取 漢字音典表，跳過第 2 行（即 index 0）---
     df_han = pd.read_excel(han_file, sheet_name="檔案", header=0, engine='openpyxl', keep_default_na=False)
-    # df_han = pd.read_csv(han_file)
     df_han = df_han.drop(index=0).reset_index(drop=True)
     df_han.columns = df_han.columns.str.strip()
-    df_han["存儲標記"] = ""  # ✅ 補上這一列
+    df_han["存儲標記"] = ""  #  補上這一列
     df_han = df_han[[col for col in required_columns if col in df_han.columns]].copy()
     df_han = df_han.rename(columns=rename_map)
 
@@ -99,106 +121,162 @@ def build_dialect_database():
     df_other = convert_coordinates(df_other)
     df_han = convert_coordinates(df_han)
 
-    # --- 寫入 SQLite ---
-    with sqlite3.connect(sqlite_db) as conn:
-        # 記錄來源
-        df_other["_來源"] = "Append_files.xlsx"
-        df_han["_來源"] = "漢字音典表"
+    # 2. 讀取兩個 Excel 文件
+    print("\n⏳ 讀取元數據文件...")
+    print(f"   HAN_PATH: {len(df_han)} 個方言點")
+    print(f"   APPEND_PATH: {len(df_other)} 個方言點")
 
-        # 合併資料
-        merged = pd.concat([df_other, df_han], ignore_index=True)
+    # 3. 掃描 TSV 文件並處理衝突（不依賴數據庫）
+    print(f"\n⏳ 掃描 TSV 文件（{mode} 模式）...")
+    print(f"   正在掃描 yindian 和 processed 目錄...")
+    tsv_paths, sources = scan_tsv_with_conflict_resolution(mode=mode, append_df=df_other)
 
-        # ✅ 在此處插入替換邏輯
-        def replace_dialect_zone(val):
-            if isinstance(val, str):
-                if val.startswith("客家話-粵北片"):
-                    return val.replace("客家話-粵北片", "客家話-粵北片·客", 1)
-                elif val.startswith("平話和土話-粵北片"):
-                    return val.replace("平話和土話-粵北片", "平話和土話-粵北片·土", 1)
-            return val
+    print(f"\n✅ 最終確定 {len(tsv_paths)} 個 TSV 文件")
 
-        merged["地圖集二分區"] = merged["地圖集二分區"].apply(replace_dialect_zone)
+    # 4. 根據 TSV 來源選擇元數據
+    print(f"\n⏳ 根據 TSV 來源選擇元數據...")
+    # 建立 簡稱 -> TSV來源 的映射（處理繁簡轉換）
+    tsv_name_to_source = {}
+    for filename, source in sources.items():
+        variants = [filename]
+        try:
+            variants.append(simplified2traditional(filename))
+        except:
+            pass
+        try:
+            variants.append(traditional2simplified(filename))
+        except:
+            pass
 
-        # 後續處理 ...
+        for variant in variants:
+            tsv_name_to_source[variant] = source
 
-        # 轉換 required_columns → 重命名後的欄位名
-        renamed_required_columns = [rename_map.get(col, col) for col in required_columns]
+    print(f"   建立了 {len(tsv_name_to_source)} 個簡稱映射")
+    print(f"\n⏳ 匹配元數據與 TSV 文件...")
 
-        # 計算非空欄位數
-        merged["_non_null_count"] = merged[renamed_required_columns].notna().sum(axis=1)
+    final_rows = []
+    all_abbr = set(df_han['簡稱'].tolist() + df_other['簡稱'].tolist())
+    print(f"   共有 {len(all_abbr)} 個唯一簡稱需要處理")
 
-        # 優先來源標記（漢字音典表優先）
-        merged["_來源優先"] = merged["_來源"].apply(lambda x: 1 if x == "漢字音典表" else 0)
+    # User 模式：只保留 isUser=1 的簡稱
+    if mode == 'user':
+        print(f"\n User 模式：過濾 isUser=1 的簡稱...")
+        if 'isUser' in df_other.columns:
+            user_abbr = set(df_other[df_other['isUser'] == 1]['簡稱'].tolist())
+            # 保留 HAN 中的所有簡稱 + APPEND 中 isUser=1 的簡稱
+            han_abbr = set(df_han['簡稱'].tolist())
+            all_abbr = han_abbr | user_abbr
+            print(f"   HAN 簡稱: {len(han_abbr)} 個")
+            print(f"   APPEND isUser=1 簡稱: {len(user_abbr)} 個")
+            print(f"   合併後: {len(all_abbr)} 個")
+        else:
+            print(f"   警告：APPEND_PATH 中沒有 isUser 列，使用所有簡稱")
 
-        # 最終保留資料列表
-        final_rows = []
+    for idx, abbr in enumerate(all_abbr, 1):
+        # 每處理 100 個簡稱打印一次進度
+        if idx % 100 == 0 or idx == len(all_abbr):
+            print(f"   處理進度: {idx}/{len(all_abbr)}")
 
-        def get_nonnull_info(row):
-            if row.empty:
-                return 0, []
-            # count = int(row["_non_null_count"])
-            cols = [col for col in renamed_required_columns if pd.notna(row[col]) and row[col] != ""]
-            count = len(cols)
-            return count, cols
-        print("\n📊 重複簡稱選擇詳情如下：")
-        for name, group in merged.groupby("簡稱"):
-            if len(group) > 1:
-                # 计算每行的非空列数并添加为新列
-                group["count"] = group.apply(
-                    lambda row: len([col for col in renamed_required_columns if pd.notna(row[col]) and row[col] != ""]),
-                    axis=1)
+        # 檢查是否有對應的 TSV 文件
+        source = tsv_name_to_source.get(abbr)
 
-                # 选择 count 最大的行，如果 count 相同则优先选择 "漢字音典表"
-                selected = None
-                for _, row in group.iterrows():
-                    count, cols = get_nonnull_info(row)
-                    if selected is None or count > selected["count"] or (
-                            count == selected["count"] and row["_來源"] == "漢字音典表"):
-                        selected = row
-                        selected["count"] = count  # 更新 selected 的 count
-
-                final_rows.append(selected)
-
-                print(f"\n🟡 簡稱: {name}")
-                for _, row in group.iterrows():
-                    count, cols = get_nonnull_info(row)
-                    print(f"  ➤ 來源：{row['_來源']}，非空欄位 {count} 個：{', '.join(cols)}")
-
-                print(f"  ✅ 最終選中來源：{selected['_來源']}")
+        # 根據 TSV 來源選擇元數據
+        if source == 'yindian':
+            # 有 yindian TSV：優先使用 HAN_PATH
+            rows_han = df_han[df_han['簡稱'] == abbr]
+            if not rows_han.empty:
+                selected_row = rows_han.iloc[0]
             else:
-                final_rows.append(group.iloc[0])
+                # HAN 中沒有，嘗試 APPEND
+                rows_other = df_other[df_other['簡稱'] == abbr]
+                if not rows_other.empty:
+                    selected_row = rows_other.iloc[0]
+                else:
+                    continue
 
-        # 建立最終 DataFrame
-        final_df = pd.DataFrame(final_rows).drop(columns=["_non_null_count", "_來源優先", "_來源"])
-        final_df = final_df.sort_values(by="音典排序", na_position="last")
+        elif source == 'processed':
+            # 有 processed TSV：優先使用 APPEND_PATH
+            rows_other = df_other[df_other['簡稱'] == abbr]
+            if not rows_other.empty:
+                selected_row = rows_other.iloc[0]
+            else:
+                # APPEND 中沒有，嘗試 HAN
+                rows_han = df_han[df_han['簡稱'] == abbr]
+                if not rows_han.empty:
+                    selected_row = rows_han.iloc[0]
+                else:
+                    continue
 
+        else:
+            # 沒有 TSV 文件：優先使用 HAN_PATH，如果 HAN 沒有則使用 APPEND
+            rows_han = df_han[df_han['簡稱'] == abbr]
+            if not rows_han.empty:
+                selected_row = rows_han.iloc[0]
+            else:
+                rows_other = df_other[df_other['簡稱'] == abbr]
+                if not rows_other.empty:
+                    selected_row = rows_other.iloc[0]
+                else:
+                    continue
+
+        final_rows.append(selected_row)
+
+    # 5. 建立最終 DataFrame
+    print(f"\n⏳ 建立最終 DataFrame（共 {len(final_rows)} 個方言點）...")
+    final_df = pd.DataFrame(final_rows)
+
+    # 6. 應用地圖集二分區替換邏輯
+    print(f"⏳ 應用地圖集二分區替換邏輯...")
+    def replace_dialect_zone(val):
+        if isinstance(val, str):
+            if val.startswith("客家話-粵北片"):
+                return val.replace("客家話-粵北片", "客家話-粵北片·客", 1)
+            elif val.startswith("平話和土話-粵北片"):
+                return val.replace("平話和土話-粵北片", "平話和土話-粵北片·土", 1)
+        return val
+
+    final_df["地圖集二分區"] = final_df["地圖集二分區"].apply(replace_dialect_zone)
+
+    # 7. 排序
+    print(f"⏳ 按音典排序排序...")
+    final_df = final_df.sort_values(by="音典排序", na_position="last")
+
+    # 8. 寫入 SQLite
+    print(f"⏳ 寫入 SQLite 數據庫...")
+    with sqlite3.connect(sqlite_db) as conn:
         # 寫入資料庫
         final_df.to_sql("dialects", conn, if_exists="replace", index=False)
+        print(f"⏳ 創建索引...")
         # 加索引
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_dialects_code ON dialects(簡稱);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_yindian_zone ON dialects(音典分區);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_atlas_zone ON dialects(地圖集二分區);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_flag ON dialects(存儲標記);")
-        # 🚀 新增：复合索引，优化常见查询 WHERE 簡稱 = ? AND 存儲標記 = ?
+        # 新增：複合索引，優化常見查詢 WHERE 簡稱 = ? AND 存儲標記 = ?
         conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_code_flag ON dialects(簡稱, 存儲標記);")
-        # 🚀 优化：音典分区+存储标记复合索引（用于模糊匹配查询）
+        # 🚀 【优先级高】用于 match_input_tip.py 的存储标记过滤
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_storage ON dialects(存儲標記, 簡稱);")
+        #  優化：音典分區+存儲標記複合索引（用於模糊匹配查詢）
         conn.execute("CREATE INDEX IF NOT EXISTS idx_query_partition_storage ON dialects(音典分區, 存儲標記);")
-        # 🚀 优化：地图集分区+存储标记复合索引（用于match_input_tip.py）
+        # 優化：地圖集分區+存儲標記複合索引（用於match_input_tip.py）
         conn.execute("CREATE INDEX IF NOT EXISTS idx_query_atlas_storage ON dialects(地圖集二分區, 存儲標記);")
 
-    print(f"✅ SQLite 資料庫 `dialects_query.db` 已建立，dialects 表已更新完成。")
+    print(f"✅ SQLite 資料庫已建立，dialects 表已更新完成。")
+
+    # 返回 TSV 路徑列表（用於 write_to_sql）
+    return tsv_paths
 
 
-def process_all2sql(tsv_paths, db_path, append=False):
+def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_path=None):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # 🚀 优化：设置 SQLite 性能参数
+    #  优化：设置 SQLite 性能参数
     cursor.execute("PRAGMA synchronous = OFF")  # 关闭同步写入
     cursor.execute("PRAGMA journal_mode = MEMORY")  # 使用内存日志
     cursor.execute("PRAGMA temp_store = MEMORY")  # 临时数据存内存
 
-    if not append:
+    if not append and not update:  # MODIFIED: Don't drop if update mode
         cursor.execute("DROP TABLE IF EXISTS dialects")
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS dialects (
@@ -215,7 +293,9 @@ def process_all2sql(tsv_paths, db_path, append=False):
     conn.commit()
 
     log_lines = []
-    update_rows = pd.DataFrame()  # 默认空的 DataFrame
+    update_簡稱_list = []  # Track which 簡稱 to update
+    processed_簡稱 = []  # Track which 簡稱 were actually processed
+    missing_data_logs = []  # 🚀 优化：批量收集缺失数据日志
 
     def clean_join(series):
         return ", ".join(x.strip() for x in series.dropna().astype(str).unique() if x and x.strip())
@@ -225,35 +305,61 @@ def process_all2sql(tsv_paths, db_path, append=False):
         try:
             df_append = pd.read_excel(APPEND_PATH, sheet_name="檔案")
             update_rows = df_append[df_append['待更新'] == 1]
+            update_簡稱_list = update_rows['簡稱'].dropna().unique().tolist()
         except:
             print("读取 APPEND_PATH 文件失败，跳过筛选。")
 
-        # 如果 append 为 True，删除数据库中与待更新行中“簡稱”匹配的记录
-        if not update_rows.empty:
-            # 去除 NaN 和空值，确保只有有效的簡稱列参与删除操作
-            valid_簡稱 = update_rows['簡稱'].dropna()  # 去除 NaN 值
-            for row in valid_簡稱:
-                cursor.execute("DELETE FROM dialects WHERE 簡稱 = ?", (row,))
-            conn.commit()
+    elif update:
+        # NEW: For update mode, extract 簡稱 from TSV filenames
+        print(f"📌 update 模式：正在提取待更新的方言點...")
+        for path in tsv_paths:
+            try:
+                tsv_result = get_tsvs(single=path, query_db_path=query_db_path)
+                if tsv_result and len(tsv_result) >= 2 and tsv_result[1]:
+                    tsv_name = tsv_result[1][0]
+                    if tsv_name not in update_簡稱_list:
+                        update_簡稱_list.append(tsv_name)
+            except:
+                continue
 
-    for path in tsv_paths:
+        print(f"📌 update 模式：將更新 {len(update_簡稱_list)} 個方言點")
+        print(f"   簡稱列表: {update_簡稱_list}")
+
+    # 如果 append 为 True，删除数据库中与待更新行中"簡稱"匹配的记录
+    if (append or update) and update_簡稱_list:
+        for 簡稱 in update_簡稱_list:
+            cursor.execute("DELETE FROM dialects WHERE 簡稱 = ?", (簡稱,))
+        conn.commit()
+        print(f"✅ 已刪除 {len(update_簡稱_list)} 個方言點的舊數據")
+
+    for idx, path in enumerate(tsv_paths, 1):
         if path == "_":
             continue
 
-        # tsv_name = os.path.splitext(os.path.basename(path))[0]
-        tsv_name = get_tsvs(single=path)[1][0]
-        now_process = f"\n🔍 正在處理：{tsv_name}"
-        print(now_process)
-        with open(MISSING_DATA_LOG, "a", encoding="utf-8") as f:
-            f.write("\n" + now_process + "\n")
+        # 獲取 TSV 文件的簡稱
+        try:
+            tsv_result = get_tsvs(single=path, query_db_path=query_db_path)
+            if tsv_result is None or len(tsv_result) < 2 or not tsv_result[1]:
+                # 無法匹配簡稱，跳過該文件
+                print(f"\n [{idx}/{len(tsv_paths)}] [跳過] 無法匹配簡稱：{os.path.basename(path)}")
+                continue
+            tsv_name = tsv_result[1][0]
+        except (IndexError, TypeError) as e:
+            # 無法匹配簡稱，跳過該文件
+            print(f"\n [{idx}/{len(tsv_paths)}] [跳過] 無法匹配簡稱：{os.path.basename(path)}")
+            continue
 
-        # 如果 append 为 True，则进行筛选
-        if append and not update_rows.empty and tsv_name not in update_rows['簡稱'].values:
+        now_process = f"\n [{idx}/{len(tsv_paths)}] 正在處理：{tsv_name}"
+        print(now_process)
+        missing_data_logs.append(now_process)  # 🚀 优化：收集日志，稍后批量写入
+
+        # 如果 append 为 True，则进行筛选 (update mode processes all files)
+        if append and update_簡稱_list and tsv_name not in update_簡稱_list:
             print(f"跳過：{tsv_name} (不在待更新清單中)")
             continue
 
         try:
-            df = extract_all_from_files(path)
+            df = extract_all_from_files(path, query_db_path=query_db_path)
             print(f"  📄 提取資料表：{len(df)} 行")
 
             df = df.fillna("")
@@ -264,29 +370,28 @@ def process_all2sql(tsv_paths, db_path, append=False):
             df["聲調"] = df["声调"].astype(str).str.strip()
             df["註釋"] = df["註釋"].astype(str).str.strip() if "註釋" in df.columns else ""
 
-            # 🚀 优化：批量插入，大幅提升性能
-            insert_count = 0
-            batch_data = []
+            # 🚀 优化：使用向量化操作过滤数据，避免 iterrows()
+            # 1. 过滤：至少有一个音韵特征不为空
+            has_any = (df["聲母"] != "") | (df["韻母"] != "") | (df["聲調"] != "")
+            df_valid = df[has_any].copy()
 
-            for _, row in df.iterrows():
-                char = row["漢字"]
-                phonetic = row["音節"]
-                cons = row["聲母"]
-                vow = row["韻母"]
-                tone = row["聲調"]
-                note = row["註釋"]
+            # 2. 检测缺失数据（有部分音韵特征但不完整）
+            has_all = (df_valid["聲母"] != "") & (df_valid["韻母"] != "") & (df_valid["聲調"] != "")
+            df_missing = df_valid[~has_all]
 
-                if not any([cons, vow, tone]):
-                    continue
+            # 3. 批量记录缺失数据日志（避免频繁文件I/O）
+            if len(df_missing) > 0:
+                for row in df_missing.itertuples(index=False):
+                    missing_data_logs.append(
+                        f"❗ 缺資料：char={row.漢字}, 音節={row.音節}, 聲母='{row.聲母}', 韻母='{row.韻母}', 聲調='{row.聲調}'"
+                    )
 
-                if not all([cons, vow, tone]):
-                    log_message = f"❗ 缺資料：char={char}, 音節={phonetic}, 聲母='{cons}', 韻母='{vow}', 聲調='{tone}'"
-                    # print(log_message)
-                    with open(MISSING_DATA_LOG, "a", encoding="utf-8") as f:
-                        f.write(log_message + "\n")
-
-                batch_data.append((tsv_name, char, phonetic, cons, vow, tone, note, ""))
-                insert_count += 1
+            # 4. 🚀 使用 itertuples() 替代 iterrows()（快10-100倍）
+            batch_data = [
+                (tsv_name, row.漢字, row.音節, row.聲母, row.韻母, row.聲調, row.註釋, "")
+                for row in df_valid.itertuples(index=False)
+            ]
+            insert_count = len(batch_data)
 
             # 批量插入所有数据
             if batch_data:
@@ -297,17 +402,26 @@ def process_all2sql(tsv_paths, db_path, append=False):
 
             conn.commit()
             log_lines.append(f"{tsv_name} 寫入了 {insert_count} 筆。")
-            # print(f"✅ {tsv_name} 完成：共寫入 {insert_count} 筆。")
+            # print(f" {tsv_name} 完成：共寫入 {insert_count} 筆。")
+
+            # Track processed 簡稱
+            if tsv_name not in processed_簡稱:
+                processed_簡稱.append(tsv_name)
 
         except Exception as e:
             error_detail = traceback.format_exc()
-            log_lines.append(f"❌ {tsv_name} 寫入失敗：\n{error_detail}")
-            print(f"❌ 錯誤處理 {tsv_name}：\n{error_detail}")
+            log_lines.append(f" {tsv_name} 寫入失敗：\n{error_detail}")
+            print(f" 錯誤處理 {tsv_name}：\n{error_detail}")
 
     conn.close()
     print(f"\n📦 所有資料已寫入：{db_path}")
 
-    # 🚀 优化：重新连接并恢复正常模式，然后创建索引
+    # 🚀 优化：批量写入所有日志（一次性I/O）
+    if missing_data_logs:
+        with open(MISSING_DATA_LOG, "a", encoding="utf-8") as f:
+            f.write("\n".join(missing_data_logs) + "\n")
+
+    #  优化：重新连接并恢复正常模式，然后创建索引
     conn_all = sqlite3.connect(db_path)
     cursor = conn_all.cursor()
 
@@ -316,32 +430,35 @@ def process_all2sql(tsv_paths, db_path, append=False):
     cursor.execute("PRAGMA journal_mode = DELETE")
 
     # 創建索引，加快查詢速度
-    print("※ 開始創建索引 ※")
-    # 🚀 基础单列索引（FastAPI 后端频繁查询的字段）
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr ON dialects(簡稱);")
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_char ON dialects(漢字);")
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_syllable ON dialects(音節);")
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_polyphonic ON dialects(多音字);")  # ✅ 新增：多音字查询
+    # update 模式下跳過創建索引（索引已存在，不需要重新創建）
+    if not update:
+        print("※ 開始創建索引 ※")
+        # 基础单列索引（FastAPI 后端频繁查询的字段）
+        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr ON dialects(簡稱);")
+        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_char ON dialects(漢字);")
+        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_syllable ON dialects(音節);")
+        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_polyphonic ON dialects(多音字);")  # 新增：多音字查询
 
-    # 🚀 复合索引，优化多字段查询和 GROUP BY
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_char_abbr ON dialects(漢字, 簡稱);")  # FastAPI 最重要
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_char ON dialects(簡稱, 漢字);")
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_char_syllable ON dialects(簡稱, 漢字, 音節);")
+        # 复合索引，优化多字段查询和 GROUP BY
+        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_char_abbr ON dialects(漢字, 簡稱);")  # FastAPI 最重要
+        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_char ON dialects(簡稱, 漢字);")
+        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_char_syllable ON dialects(簡稱, 漢字, 音節);")
 
-    # 🚀 【优先级高】用于音韵特征查询（分别优化聲母/韻母/聲調查询）
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_initial ON dialects(簡稱, 聲母);")
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_final ON dialects(簡稱, 韻母);")
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_tone ON dialects(簡稱, 聲調);")
+        # 【优先级高】用于音韵特征查询（分别优化聲母/韻母/聲調查询）
+        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_initial ON dialects(簡稱, 聲母);")
+        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_final ON dialects(簡稱, 韻母);")
+        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_tone ON dialects(簡稱, 聲調);")
 
-    # 🚀 【优先级高】用于 match_input_tip.py 的存储标记过滤
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_storage ON dialects(存儲標記, 簡稱);")
-
-    # 🚀 【优先级高】优化多音字查询（WHERE 多音字='1' AND 簡稱=? AND 漢字 IN ...）
-    conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_polyphonic_full ON dialects(多音字, 簡稱, 漢字);")
+        # 【优先级高】优化多音字查询（WHERE 多音字='1' AND 簡稱=? AND 漢字 IN ...）
+        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_polyphonic_full ON dialects(多音字, 簡稱, 漢字);")
+        print("✅ 索引創建完成")
+    else:
+        print("⏭️  update 模式：跳過創建索引（索引已存在）")
 
     conn_all.commit()
+    conn_all.close()  # 🔧 修复：关闭数据库连接，避免锁定
 
-    # print("\n📊 寫入總結：")
+    # print("\n 寫入總結：")
     # for line in log_lines:
     # print("   " + line)
 
@@ -349,61 +466,134 @@ def process_all2sql(tsv_paths, db_path, append=False):
         f.write("\n".join(log_lines))
     # print(f"\n📝 已寫入紀錄至：{log_path}")
 
+    return processed_簡稱  # Return list of processed dialects
 
-# 舊版代碼，直接刪除整個數據庫並更新（快，但是电脑会特别卡）
-# 🚀 优化版本：减少不必要的输出，提升性能
+
+
+# 🚀 优化版本：分批處理，避免內存溢出
 def process_polyphonic_annotations(db_path: str):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # 🚀 优化：设置 SQLite 性能参数
+    #  优化：设置 SQLite 性能参数
     cursor.execute("PRAGMA synchronous = OFF")
     cursor.execute("PRAGMA journal_mode = MEMORY")
 
-    df = pd.read_sql_query("SELECT * FROM dialects ORDER BY 簡稱, 漢字", conn)
+    # 先獲取所有唯一的簡稱
+    cursor.execute("SELECT DISTINCT 簡稱 FROM dialects")
+    locations = [row[0] for row in cursor.fetchall()]
+    total_locations = len(locations)
 
-    print(f"🔍 資料庫讀取完成，共 {len(df)} 筆")
+    print(f"📍 共有 {total_locations} 個地點待處理\n")
 
-    # 一階段：合併同音節註釋（聲母、韻母、聲調一致）
-    merged = []
-    grouped = df.groupby(["簡稱", "漢字", "音節"])
+    # 創建臨時表存儲處理後的結果
+    cursor.execute("DROP TABLE IF EXISTS dialects_temp")
+    cursor.execute('''
+        CREATE TABLE dialects_temp (
+            簡稱 TEXT,
+            漢字 TEXT,
+            音節 TEXT,
+            聲母 TEXT,
+            韻母 TEXT,
+            聲調 TEXT,
+            註釋 TEXT,
+            多音字 TEXT
+        )
+    ''')
 
-    previous_short_name = None
-    count_num = 1
-    for (short_name, char, syllable), group in grouped:
-        if short_name != previous_short_name:
-            print(f"正在處理：{short_name}(第{count_num}個)")
-            count_num += 1
-            previous_short_name = short_name
+    # 分批處理地點（每次處理 20 個）
+    batch_size = 50
+    total_batches = (total_locations + batch_size - 1) // batch_size
 
-        unique_phonetics = group[["聲母", "韻母", "聲調"]].drop_duplicates()
-        if len(unique_phonetics) == 1:
-            notes = group["註釋"].dropna().astype(str).str.strip().unique()
-            notes = [n for n in notes if n]
-            combined_note = ";".join(notes) if notes else ""
+    for batch_idx in range(0, total_locations, batch_size):
+        batch_locations = locations[batch_idx:batch_idx + batch_size]
+        batch_num = batch_idx // batch_size + 1
 
-            base_row = group.iloc[0].copy()
-            base_row["註釋"] = combined_note
-            merged.append(base_row)
+        print(f"\n[批次 {batch_num}/{total_batches}] 正在處理 {len(batch_locations)} 個地點...")
+        print(f"  地點：{', '.join(batch_locations[:5])}{'...' if len(batch_locations) > 5 else ''}")
+
+        # 讀取當前批次所有地點的數據
+        placeholders = ','.join(['?' for _ in batch_locations])
+        df = pd.read_sql_query(
+            f"SELECT * FROM dialects WHERE 簡稱 IN ({placeholders}) ORDER BY 簡稱, 漢字",
+            conn,
+            params=batch_locations
+        )
+
+        if len(df) == 0:
+            continue
+
+        print(f"  讀取了 {len(df)} 筆數據")
+
+        # 🚀 創建音韻特徵組合鍵
+        df['_phonetic_key'] = (df['聲母'].astype(str) + '|' +
+                               df['韻母'].astype(str) + '|' +
+                               df['聲調'].astype(str))
+
+        # 🚀 為每個 (簡稱, 漢字, 音節) 組分配唯一ID
+        df['_group_id'] = df.groupby(['簡稱', '漢字', '音節']).ngroup()
+
+        # 🚀 計算每組的唯一音韻特徵數
+        phonetic_counts = df.groupby('_group_id')['_phonetic_key'].nunique()
+        df['_phonetic_count'] = df['_group_id'].map(phonetic_counts)
+
+        # 🚀 分離兩種情況：音韻一致 vs 音韻不一致
+        consistent_mask = df['_phonetic_count'] == 1
+        inconsistent_mask = ~consistent_mask
+
+        # === 處理音韻一致的組（需要合併註釋） ===
+        consistent_df = df[consistent_mask].copy()
+
+        # 🚀 向量化合併註釋
+        def agg_notes(series):
+            """聚合註釋：去空、去重、用分號連接"""
+            notes = series.dropna().astype(str).str.strip()
+            notes = notes[notes != '']
+            if len(notes) == 0:
+                return ''
+            return ';'.join(notes.unique())
+
+        # 🚀 使用 groupby.agg() 一次性處理所有組
+        if len(consistent_df) > 0:
+            consistent_merged = consistent_df.groupby('_group_id', as_index=False).agg({
+                '簡稱': 'first',
+                '漢字': 'first',
+                '音節': 'first',
+                '聲母': 'first',
+                '韻母': 'first',
+                '聲調': 'first',
+                '註釋': agg_notes,
+                '多音字': 'first'
+            })
         else:
-            # 🚀 优化：减少警告输出
-            # print(f"⚠️ 音節相同但聲韻調不同：{char} / {syllable}")
-            for _, row in group.iterrows():
-                merged.append(row)
+            consistent_merged = pd.DataFrame(columns=['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字'])
 
-    merged_df = pd.DataFrame(merged)
-    print(f"✅ 合併後剩餘 {len(merged_df)} 筆")
+        # === 處理音韻不一致的組（保留所有行） ===
+        inconsistent_df = df[inconsistent_mask][['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字']].copy()
 
-    # 二階段：標記多音字（音節不同）
-    grouped2 = merged_df.groupby(["簡稱", "漢字"])
+        # 🚀 合併兩部分
+        merged_df = pd.concat([consistent_merged, inconsistent_df], ignore_index=True)
 
-    # 🚀 优化：使用 transform() 批量处理，避免循环
-    merged_df['多音字'] = grouped2['音節'].transform(lambda x: '1' if x.nunique() > 1 else '')
-    final_df = merged_df
+        # 標記多音字（音節不同）- 按簡稱和漢字分組
+        merged_df['多音字'] = merged_df.groupby(['簡稱', '漢字'])['音節'].transform(
+            lambda x: '1' if x.nunique() > 1 else ''
+        )
 
-    # 🚀 优化：一次性重建表（比逐行UPDATE快得多）
+        # 只保留需要的列，去除臨時列
+        final_columns = ['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字']
+        merged_df = merged_df[final_columns]
+
+        # 寫入臨時表
+        merged_df.to_sql("dialects_temp", conn, if_exists='append', index=False)
+
+        print(f"  處理後剩餘 {len(merged_df)} 筆（原始 {len(df)} 筆）")
+
+        # 釋放內存
+        del df, merged_df
+
+    print("\n⏳ 正在重建數據庫表...")
     cursor.execute("DROP TABLE IF EXISTS dialects")
-    final_df.to_sql("dialects", conn, index=False)
+    cursor.execute("ALTER TABLE dialects_temp RENAME TO dialects")
 
     # 恢复正常模式
     cursor.execute("PRAGMA synchronous = NORMAL")
@@ -435,7 +625,7 @@ def process_polyphonic_annotations_new(db_path: str, append: bool = False):
         except Exception as e:
             print(f"❗ 無法讀取 APPEND_PATH：{e}，將處理全部資料。")
 
-    print(f"🔍 待處理資料筆數：{len(df)}")
+    print(f" 待處理資料筆數：{len(df)}")
 
     grouped = df.groupby(["簡稱", "漢字"])
 
@@ -510,7 +700,7 @@ def sync_dialects_flags(all_db_path=DIALECTS_DB_PATH,
                         log_path=CHARACTERS_DB_PATH):
     # 讀取 dialects_all.db 中所有唯一簡稱
     conn_all = sqlite3.connect(all_db_path)
-    # 🚀 优化：索引已在 process_all2sql 中创建，此处无需重复
+    #  优化：索引已在 process_all2sql 中创建，此处无需重复
     cursor_all = conn_all.cursor()
     cursor_all.execute("SELECT DISTINCT 簡稱 FROM dialects")
     all_tags = set(row[0] for row in cursor_all.fetchall())
@@ -557,7 +747,7 @@ def sync_dialects_flags(all_db_path=DIALECTS_DB_PATH,
         success_message = "成功存儲：\n" + "\n".join(lines)
         f.write(success_message + "\n")
 
-    print("✅ 同步完成。已更新存儲標記。")
+    print(" 同步完成。已更新存儲標記。")
 
 
 def process_phonology_excel(
@@ -577,13 +767,13 @@ def process_phonology_excel(
     try:
         df = pd.read_excel(excel_file, sheet_name=sheet_name, dtype=str)
     except Exception as e:
-        print(f"❌ 讀取 Excel 失敗: {e}")
+        print(f" 讀取 Excel 失敗: {e}")
         return
 
     try:
         df = df[columns_needed].rename(columns=rename_map)
     except KeyError as e:
-        print(f"❌ 缺少必要欄位: {e}")
+        print(f" 缺少必要欄位: {e}")
         return
 
     # 清除漢字為空的行
@@ -635,11 +825,11 @@ def process_phonology_excel(
             conn.execute(sql)
             print(f"   [三列索引] ({col1}, {col2}, 漢字)")
 
-        # 🚀 【优先级中】用于 status_arrange_pho.py 的分组统计（組→母→攝→韻→調）
+        #  【优先级中】用于 status_arrange_pho.py 的分组统计（組→母→攝→韻→調）
         conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_hierarchy ON characters(組, 母, 攝, 韻, 調);")
         print(f"   [五列索引] (組, 母, 攝, 韻, 調) - 用于分组统计")
 
-        # 🚀 【优先级中】用于等级查询（等=三的特殊处理）
+        #  【优先级中】用于等级查询（等=三的特殊处理）
         conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_grade ON characters(等, 漢字);")
         print(f"   [复合索引] (等, 漢字) - 用于等级查询")
 
@@ -671,64 +861,246 @@ def process_phonology_excel(
                 print(f"   [单列索引] {col}")
 
         conn.close()
-        print("✅ 索引優化完成！")
+        print(" 索引優化完成！")
     except Exception as e:
-        print(f"❌ SQLite 寫入失敗: {e}")
+        print(f" SQLite 寫入失敗: {e}")
 
 
-def write_to_sql(yindian=None, write_chars_db=None, append=False):
-    #  寫檔案表
-    print("开始寫入檔案表")
-    build_dialect_database()
+def scan_update_directory():
+    """
+    Scan UPDATE_DATA_DIR for all TSV files
+    Returns list of TSV file paths
+    """
+    if not os.path.exists(UPDATE_DATA_DIR):
+        print(f"⚠️ UPDATE_DATA_DIR 不存在: {UPDATE_DATA_DIR}")
+        return []
 
-    #  寫總數據表
-    if yindian:
-        if yindian == 'only':
-            tsv_paths_yindian, *_ = get_tsvs(output_dir=YINDIAN_DATA_DIR)
-            tsv_paths = [
-                p for p in tsv_paths_yindian
-                if os.path.splitext(os.path.basename(p))[0] not in exclude_files
-            ]
+    tsv_files = []
+    for file in os.listdir(UPDATE_DATA_DIR):
+        if file.endswith('.tsv'):
+            full_path = os.path.join(UPDATE_DATA_DIR, file)
+            tsv_files.append(full_path)
+
+    print(f"📂 從 UPDATE_DATA_DIR 找到 {len(tsv_files)} 個 TSV 文件")
+    return tsv_files
+
+
+def process_polyphonic_annotations_selective(db_path: str, 簡稱_list: list):
+    """
+    Process polyphonic annotations for specific dialects only
+    More efficient than processing entire table
+
+    Args:
+        db_path: Path to dialects database
+        簡稱_list: List of 簡稱 to process
+    """
+    if not 簡稱_list:
+        print("⚠️ 沒有指定要處理的簡稱，跳過多音字處理")
+        return
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Performance optimization
+    cursor.execute("PRAGMA synchronous = OFF")
+    cursor.execute("PRAGMA journal_mode = MEMORY")
+
+    print(f"📝 處理多音字標記（僅處理 {len(簡稱_list)} 個方言點）...")
+
+    # Process each 簡稱 separately to avoid loading entire table
+    for idx, 簡稱 in enumerate(簡稱_list, 1):
+        print(f"[{idx}/{len(簡稱_list)}] 正在處理：{簡稱}")
+
+        # Read only this dialect's data
+        query = "SELECT * FROM dialects WHERE 簡稱 = ? ORDER BY 漢字"
+        df = pd.read_sql_query(query, conn, params=(簡稱,))
+
+        if df.empty:
+            continue
+
+        # Create phonetic key
+        df['_phonetic_key'] = (df['聲母'].astype(str) + '|' +
+                               df['韻母'].astype(str) + '|' +
+                               df['聲調'].astype(str))
+
+        # Group by (漢字, 音節)
+        df['_group_id'] = df.groupby(['漢字', '音節']).ngroup()
+
+        # Count unique phonetic features per group
+        phonetic_counts = df.groupby('_group_id')['_phonetic_key'].nunique()
+        df['_phonetic_count'] = df['_group_id'].map(phonetic_counts)
+
+        # Process consistent groups (merge notes)
+        consistent_mask = df['_phonetic_count'] == 1
+
+        if consistent_mask.any():
+            consistent_df = df[consistent_mask].copy()
+
+            def agg_notes(series):
+                notes = series.dropna().astype(str).str.strip()
+                notes = notes[notes != '']
+                if len(notes) == 0:
+                    return ''
+                return ';'.join(notes.unique())
+
+            consistent_merged = consistent_df.groupby('_group_id', as_index=False).agg({
+                '簡稱': 'first',
+                '漢字': 'first',
+                '音節': 'first',
+                '聲母': 'first',
+                '韻母': 'first',
+                '聲調': 'first',
+                '註釋': agg_notes,
+                '多音字': 'first'
+            })
+
+            # Delete old records for this 簡稱
+            cursor.execute("DELETE FROM dialects WHERE 簡稱 = ?", (簡稱,))
+
+            # Insert merged records
+            inconsistent_df = df[~consistent_mask][['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字']].copy()
+            merged_df = pd.concat([consistent_merged, inconsistent_df], ignore_index=True)
         else:
-            tsv_paths_yindian, *_ = get_tsvs(output_dir=YINDIAN_DATA_DIR)
-            tsv_paths_mine, *_ = get_tsvs()
-            # 用字典来保存最终的路径，并按文件名进行合并
-            merged_paths = {}
-            # 将 tsv_paths_yindian 中的文件路径添加到字典中，使用文件名作为键
-            for path in tsv_paths_yindian:
-                filename = os.path.basename(path)
-                merged_paths[filename] = path
-            # 遍历 tsv_paths_mine，如果文件名已存在，更新为 mine 中的路径
-            for path in tsv_paths_mine:
-                filename = os.path.basename(path)
-                merged_paths[filename] = path  # 直接覆盖已有路径
-            # print(merged_paths)
-            # 合并完成后的路径列表
-            # tsv_paths = list(merged_paths.values())
-            tsv_paths = [
-                path for file, path in merged_paths.items()
-                if os.path.splitext(file)[0] not in exclude_files
-            ]
-            # print(tsv_paths)
-            # tsv_paths = tsv_paths_yindian + tsv_paths_mine
-    else:
-        tsv_paths, *_ = get_tsvs()
-    db_path = os.path.join(os.getcwd(), DIALECTS_DB_PATH)
-    print("🚀 開始導入資料...")
-    process_all2sql(tsv_paths, db_path, append)
-    print("开始处理重复行以及标记多音字")
-    # 🚀 优化：统一使用旧版函数（一次性重建表更快）
-    process_polyphonic_annotations(DIALECTS_DB_PATH)
-    print("开始寫入存儲標記")
-    sync_dialects_flags()
+            # No merging needed, just use original data
+            cursor.execute("DELETE FROM dialects WHERE 簡稱 = ?", (簡稱,))
+            merged_df = df[['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字']].copy()
 
+        # Mark polyphonic characters
+        merged_df['多音字'] = merged_df.groupby('漢字')['音節'].transform(
+            lambda x: '1' if x.nunique() > 1 else ''
+        )
+
+        # 只保留需要的列，去除臨時列
+        final_columns = ['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字']
+        merged_df = merged_df[final_columns]
+
+        # Re-insert processed data
+        merged_df.to_sql('dialects', conn, if_exists='append', index=False)
+
+    conn.commit()
+
+    # Restore normal mode
+    cursor.execute("PRAGMA synchronous = NORMAL")
+    cursor.execute("PRAGMA journal_mode = DELETE")
+
+    conn.close()
+    print("✅ 多音字處理完成")
+
+
+def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, mode='admin'):
+    """
+    Args:
+        mode: 'admin' 或 'user'
+        append: 從 Excel 配置文件讀取待更新列表
+        update: 從 UPDATE_DATA_DIR 目錄讀取所有 TSV 文件進行增量更新
+    """
+
+    # 記錄開始時間
+    start_time = time.time()
+    step_times = {}
+
+    # 1. 確定數據庫路徑
+    if mode == 'admin':
+        query_db_path = QUERY_DB_ADMIN_PATH
+        dialects_db_path = DIALECTS_DB_ADMIN_PATH
+    else:  # user
+        query_db_path = QUERY_DB_USER_PATH
+        dialects_db_path = DIALECTS_DB_USER_PATH
+
+    # 2. 構建 query 數據庫，同時獲取 TSV 路徑列表
+    print(f"\n{'='*60}")
+    print(f"步驟1：構建方言查詢數據庫（{mode} 模式）...")
+    print(f"{'='*60}")
+    step1_start = time.time()
+    tsv_paths = build_dialect_database(mode=mode)
+    step_times['步驟1：構建方言查詢數據庫'] = time.time() - step1_start
+
+    # 3. Override TSV paths if in update mode
+    if update:
+        print(f"\n{'='*60}")
+        print(f"update 模式：使用 UPDATE_DATA_DIR 中的文件")
+        print(f"{'='*60}")
+        tsv_paths = scan_update_directory()
+
+    # 4. 過濾排除文件 (only for non-update mode)
+    if not update:
+        tsv_paths = [
+            p for p in tsv_paths
+            if os.path.splitext(os.path.basename(p))[0] not in exclude_files
+        ]
+
+    print(f"   共 {len(tsv_paths)} 個 TSV 文件待處理")
+
+    # 5. 寫入總數據表
+    print(f"\n{'='*60}")
+    print(f"步驟2：寫入方言數據...")
+    print(f"{'='*60}")
+    step2_start = time.time()
+    db_path = os.path.join(os.getcwd(), dialects_db_path)
+    processed_簡稱 = process_all2sql(tsv_paths, db_path, append, update, query_db_path=query_db_path)
+    step_times['步驟2：寫入方言數據'] = time.time() - step2_start
+
+    # 5. 處理重複行和多音字
+    print(f"\n{'='*60}")
+    print(f"步驟3：處理重複行和多音字...")
+    print(f"{'='*60}")
+    step3_start = time.time()
+
+    if update and processed_簡稱:
+        # Use selective processing for update mode (more efficient)
+        process_polyphonic_annotations_selective(dialects_db_path, processed_簡稱)
+    else:
+        # Use full processing for normal/append mode
+        process_polyphonic_annotations(dialects_db_path)
+
+    step_times['步驟3：處理重複行和多音字'] = time.time() - step3_start
+
+    # 6. 同步存儲標記
+    print(f"\n{'='*60}")
+    print(f"步驟4：同步存儲標記...")
+    print(f"{'='*60}")
+    step4_start = time.time()
+    sync_dialects_flags(
+        all_db_path=dialects_db_path,
+        query_db_path=query_db_path
+    )
+    step_times['步驟4：同步存儲標記'] = time.time() - step4_start
+
+    # 7. 寫入漢字地位表（可選）
     if write_chars_db:
-        #  寫漢字地位表
-        print("开始寫入漢字地位表")
+        print(f"\n{'='*60}")
+        print(f"步驟5：寫入漢字地位表...")
+        print(f"{'='*60}")
+        step5_start = time.time()
         process_phonology_excel()
-    # print("✅ 測試完成。")
+        step_times['步驟5：寫入漢字地位表'] = time.time() - step5_start
+
+    # 計算總時間
+    total_time = time.time() - start_time
+
+    # 輸出時間統計
+    print(f"\n{'='*60}")
+    print(f"⏱️  執行時間統計")
+    print(f"{'='*60}")
+    for step_name, duration in step_times.items():
+        minutes = int(duration // 60)
+        seconds = duration % 60
+        if minutes > 0:
+            print(f"  {step_name}: {minutes}分{seconds:.2f}秒")
+        else:
+            print(f"  {step_name}: {seconds:.2f}秒")
+
+    print(f"{'-'*60}")
+    total_minutes = int(total_time // 60)
+    total_seconds = total_time % 60
+    if total_minutes > 0:
+        print(f"  ✅ 總執行時間: {total_minutes}分{total_seconds:.2f}秒")
+    else:
+        print(f"  ✅ 總執行時間: {total_seconds:.2f}秒")
+    print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":
     write_to_sql()
     # build_dialect_database()
+
