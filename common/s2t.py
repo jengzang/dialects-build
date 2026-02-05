@@ -6,6 +6,17 @@ from common.config import ZHENGZI_PATH, MULCODECHAR_PATH
 
 
 opencc_s2t = OpenCC('s2t.json')
+opencc_t2s = OpenCC('t2s.json')
+
+# ========== 簡繁轉換輔助函數 ==========
+def simplified2traditional(text):
+    """簡體轉繁體"""
+    return opencc_s2t.convert(text)
+
+def traditional2simplified(text):
+    """繁體轉簡體"""
+    return opencc_t2s.convert(text)
+
 # ========== 繁體轉換函數 ==========
 def s2t_pro(字組, level=1):
     variant_file = os.path.join(os.path.dirname(__file__), ZHENGZI_PATH)
