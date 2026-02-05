@@ -37,15 +37,20 @@ def search_tones(locations=None, regions=None, get_raw: bool = False, db_path=QU
         if value is None or pd.isnull(value):
             return ""
         if isinstance(value, str):
-            elements = re.split(r'[，,|;]', value)
+            # 1. 先拆分
+            raw_elements = re.split(r'[，,|;]', value)
+
+            # 2. 預先清洗：去除空字符串，這樣 len() 才是準確的有效元素個數
+            elements = [e.strip() for e in raw_elements if e.strip()]
+
             processed_elements = []
+            # 3. 判斷是否需要字母：只有當元素大於 1 個時才啟用
+            need_letter = len(elements) > 1
 
             for i, element in enumerate(elements):
-                element = element.strip()
-                if not element:
-                    continue
-                # 生成對應字母 (a, b, c...)
-                letter = chr(97 + i)
+                # 4. 如果需要字母則生成 'a', 'b'...，否則為空字符串
+                letter = chr(97 + i) if need_letter else ""
+
                 # 只有當元素沒有 [ 和 ] 時才加上 [num + letter]
                 if '[' not in element and ']' not in element:
                     processed_elements.append(f"[{num}{letter}]{element}")
