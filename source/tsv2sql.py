@@ -73,7 +73,7 @@ def build_dialect_database(mode='admin'):
         "存儲標記", "經緯度", "地圖級別",
         *geo_map.keys(),
         *tone_map.keys(),
-        # "isUser"  # 添加 isUser 列
+        "isUser"  # 添加 isUser 列
     ]
 
     # --- 讀取 Append_files.xlsx ---
