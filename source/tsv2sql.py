@@ -1,6 +1,7 @@
 import os
 import re
 import sqlite3
+import sys
 import traceback
 import time
 from pathlib import Path
@@ -9,12 +10,14 @@ import pandas as pd
 
 from common.constants import exclude_files
 from source.change_coordinates import GPSUtil
-from common.config import HAN_PATH, APPEND_PATH, QUERY_DB_PATH, DIALECTS_DB_PATH, CHARACTERS_DB_PATH, PHO_TABLE_PATH, \
-    MISSING_DATA_LOG, WRITE_INFO_LOG, YINDIAN_DATA_DIR, UPDATE_DATA_DIR
+from common.config import (HAN_PATH, APPEND_PATH, QUERY_DB_PATH, DIALECTS_DB_PATH, CHARACTERS_DB_PATH, PHO_TABLE_PATH, \
+                           MISSING_DATA_LOG, WRITE_INFO_LOG, YINDIAN_DATA_DIR, UPDATE_DATA_DIR, QUERY_DB_ADMIN_PATH,
+                           QUERY_DB_USER_PATH, DIALECTS_DB_ADMIN_PATH, DIALECTS_DB_USER_PATH)
+from source.match_fromdb import scan_tsv_with_conflict_resolution
+from common.s2t import simplified2traditional, traditional2simplified
 from source.get_new import extract_all_from_files
 from source.match_fromdb import get_tsvs
-from common.config import (QUERY_DB_ADMIN_PATH, QUERY_DB_USER_PATH,
-                           DIALECTS_DB_ADMIN_PATH, DIALECTS_DB_USER_PATH)
+
 
 def build_dialect_database(mode='admin'):
     """
@@ -26,10 +29,6 @@ def build_dialect_database(mode='admin'):
     Returns:
         list: TSV 路徑列表（用於後續寫入數據）
     """
-    from common.config import (QUERY_DB_ADMIN_PATH, QUERY_DB_USER_PATH,
-                               HAN_PATH, APPEND_PATH)
-    from source.match_fromdb import scan_tsv_with_conflict_resolution
-    from common.s2t import simplified2traditional, traditional2simplified
 
     # 1. 確定數據庫路徑
     if mode == 'admin':
@@ -42,7 +41,7 @@ def build_dialect_database(mode='admin'):
     han_file = Path(HAN_PATH)
     other_file = Path(APPEND_PATH)
 
-    # --- 欄位對應 ---
+    # --- A. 定義欄位映射 ---
     tone_map = {
         "[1]陰平": "T1陰平",
         "[2]陽平": "T2陽平",
@@ -67,28 +66,67 @@ def build_dialect_database(mode='admin'):
 
     rename_map = {**tone_map, **geo_map}
 
-    # 欄位清單（原始名稱）
-    required_columns = [
-        "語言", "簡稱", "音典排序", "地圖集二分區", "音典分區", "字表來源（母本）", "方言島",
-        "存儲標記", "經緯度", "地圖級別",
-        *geo_map.keys(),
-        *tone_map.keys(),
-        "isUser"  # 添加 isUser 列
+    # --- B. 定義必須存在的基礎欄位 (除了 Mapping 以外的) ---
+    # 注意：'存儲標記' 是代碼生成的，'isUser' 是可選的，所以不放在這裡
+    base_required_columns = [
+        "語言", "簡稱", "音典排序", "地圖集二分區", "音典分區",
+        "字表來源（母本）", "方言島", "經緯度", "地圖級別"
     ]
 
+    # --- C. 定義校驗函數 ---
+    def validate_required_columns(df_columns, filename):
+        """
+        嚴格檢查文件是否包含所有必要欄位（Mapping + Base）。
+        除了 'isUser' 和 '存儲標記' 以外，缺失任何欄位都會報錯。
+        """
+        missing_cols = []
+
+        # 1. 檢查 Mapping 欄位 (聲調 + 地理)
+        for col in rename_map.keys():
+            if col not in df_columns:
+                missing_cols.append(col)
+
+        # 2. 檢查 基礎 欄位 (簡稱、經緯度等)
+        for col in base_required_columns:
+            if col not in df_columns:
+                missing_cols.append(col)
+
+        if missing_cols:
+            print(f"\n❌ 嚴重錯誤：文件【{filename}】缺少必要欄位！程序終止。")
+            print(f"   缺失的欄位 ({len(missing_cols)}個): {missing_cols}")
+            print(f"   請檢查 Excel 表頭是否被修改，或是否有隱藏字符。")
+            sys.exit(1)
+
+    # --- D. 最終需要的欄位列表 (用於篩選) ---
+    # 這裡包含 isUser，如果 DataFrame 裡有就保留，沒有拉倒
+    final_columns_filter = base_required_columns + ["存儲標記", "isUser"] + list(rename_map.keys())
+
     # --- 讀取 Append_files.xlsx ---
+    print(f"⏳ 正在讀取並校驗 {other_file.name} ...")
     df_other = pd.read_excel(other_file, sheet_name="檔案", header=0)
-    df_other.columns = df_other.columns.str.strip()
-    df_other["存儲標記"] = ""  #  補上這一列
-    df_other = df_other[[col for col in required_columns if col in df_other.columns]].copy()
+    df_other.columns = df_other.columns.str.strip()  # 先去空格
+
+    # 【執行校驗】
+    validate_required_columns(df_other.columns, other_file.name)
+
+    df_other["存儲標記"] = ""  # 代碼生成，無需校驗
+
+    # 安全篩選：只保留我們定義在 final_columns_filter 裡的列，且該列必須真的存在於 df 中
+    df_other = df_other[[col for col in final_columns_filter if col in df_other.columns]].copy()
     df_other = df_other.rename(columns=rename_map)
 
-    # --- 讀取 漢字音典表，跳過第 2 行（即 index 0）---
+    # --- 讀取 漢字音典表 ---
+    print(f"⏳ 正在讀取並校驗 {han_file.name} ...")
+    # 跳過第 2 行（即 index 0）
     df_han = pd.read_excel(han_file, sheet_name="檔案", header=0, engine='openpyxl', keep_default_na=False)
     df_han = df_han.drop(index=0).reset_index(drop=True)
-    df_han.columns = df_han.columns.str.strip()
-    df_han["存儲標記"] = ""  #  補上這一列
-    df_han = df_han[[col for col in required_columns if col in df_han.columns]].copy()
+    df_han.columns = df_han.columns.str.strip()  # 先去空格
+
+    # 【執行校驗】
+    validate_required_columns(df_han.columns, han_file.name)
+
+    df_han["存儲標記"] = ""  # 代碼生成，無需校驗
+    df_han = df_han[[col for col in final_columns_filter if col in df_han.columns]].copy()
     df_han = df_han.rename(columns=rename_map)
 
     # --- 處理經緯度轉換 ---
@@ -227,6 +265,7 @@ def build_dialect_database(mode='admin'):
 
     # 6. 應用地圖集二分區替換邏輯
     print(f"⏳ 應用地圖集二分區替換邏輯...")
+
     def replace_dialect_zone(val):
         if isinstance(val, str):
             if val.startswith("客家話-粵北片"):
@@ -469,7 +508,6 @@ def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_pat
     return processed_簡稱  # Return list of processed dialects
 
 
-
 # 🚀 优化版本：分批處理，避免內存溢出
 def process_polyphonic_annotations(db_path: str):
     conn = sqlite3.connect(db_path)
@@ -569,7 +607,8 @@ def process_polyphonic_annotations(db_path: str):
             consistent_merged = pd.DataFrame(columns=['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字'])
 
         # === 處理音韻不一致的組（保留所有行） ===
-        inconsistent_df = df[inconsistent_mask][['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字']].copy()
+        inconsistent_df = df[inconsistent_mask][
+            ['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字']].copy()
 
         # 🚀 合併兩部分
         merged_df = pd.concat([consistent_merged, inconsistent_df], ignore_index=True)
@@ -759,9 +798,11 @@ def process_phonology_excel(
     os.makedirs("data", exist_ok=True)
 
     # 欄位設置
-    columns_needed = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式", "單字", "釋義", "多聲母", "多等", "多韻", "多調"]
+    columns_needed = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式", "單字", "釋義",
+                      "多聲母", "多等", "多韻", "多調"]
     rename_map = {"單字": "漢字"}
-    write_columns = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式", "漢字", "釋義", "多聲母", "多等", "多韻", "多調"]
+    write_columns = ["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式", "漢字", "釋義",
+                     "多聲母", "多等", "多韻", "多調"]
 
     # 讀取 Excel
     try:
@@ -958,7 +999,8 @@ def process_polyphonic_annotations_selective(db_path: str, 簡稱_list: list):
             cursor.execute("DELETE FROM dialects WHERE 簡稱 = ?", (簡稱,))
 
             # Insert merged records
-            inconsistent_df = df[~consistent_mask][['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字']].copy()
+            inconsistent_df = df[~consistent_mask][
+                ['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字']].copy()
             merged_df = pd.concat([consistent_merged, inconsistent_df], ignore_index=True)
         else:
             # No merging needed, just use original data
@@ -1008,22 +1050,22 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
         dialects_db_path = DIALECTS_DB_USER_PATH
 
     # 2. 構建 query 數據庫，同時獲取 TSV 路徑列表
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"步驟1：構建方言查詢數據庫（{mode} 模式）...")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     step1_start = time.time()
     tsv_paths = build_dialect_database(mode=mode)
     step_times['步驟1：構建方言查詢數據庫'] = time.time() - step1_start
 
     # 3. Override TSV paths if in update mode
     if update:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"update 模式：使用 UPDATE_DATA_DIR 中的文件")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         tsv_paths = scan_update_directory()
 
-    # 4. 過濾排除文件 (only for non-update mode)
-    if not update:
+    # 4. 過濾排除文件 (非 update 模式 且 非 admin 模式才過濾)
+    if not update and mode != 'admin':
         tsv_paths = [
             p for p in tsv_paths
             if os.path.splitext(os.path.basename(p))[0] not in exclude_files
@@ -1032,18 +1074,18 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
     print(f"   共 {len(tsv_paths)} 個 TSV 文件待處理")
 
     # 5. 寫入總數據表
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"步驟2：寫入方言數據...")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     step2_start = time.time()
     db_path = os.path.join(os.getcwd(), dialects_db_path)
     processed_簡稱 = process_all2sql(tsv_paths, db_path, append, update, query_db_path=query_db_path)
     step_times['步驟2：寫入方言數據'] = time.time() - step2_start
 
     # 5. 處理重複行和多音字
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"步驟3：處理重複行和多音字...")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     step3_start = time.time()
 
     if update and processed_簡稱:
@@ -1056,9 +1098,9 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
     step_times['步驟3：處理重複行和多音字'] = time.time() - step3_start
 
     # 6. 同步存儲標記
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"步驟4：同步存儲標記...")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     step4_start = time.time()
     sync_dialects_flags(
         all_db_path=dialects_db_path,
@@ -1068,9 +1110,9 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
 
     # 7. 寫入漢字地位表（可選）
     if write_chars_db:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"步驟5：寫入漢字地位表...")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         step5_start = time.time()
         process_phonology_excel()
         step_times['步驟5：寫入漢字地位表'] = time.time() - step5_start
@@ -1079,9 +1121,9 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
     total_time = time.time() - start_time
 
     # 輸出時間統計
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"⏱️  執行時間統計")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     for step_name, duration in step_times.items():
         minutes = int(duration // 60)
         seconds = duration % 60
@@ -1090,17 +1132,16 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
         else:
             print(f"  {step_name}: {seconds:.2f}秒")
 
-    print(f"{'-'*60}")
+    print(f"{'-' * 60}")
     total_minutes = int(total_time // 60)
     total_seconds = total_time % 60
     if total_minutes > 0:
         print(f"  ✅ 總執行時間: {total_minutes}分{total_seconds:.2f}秒")
     else:
         print(f"  ✅ 總執行時間: {total_seconds:.2f}秒")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
 
 if __name__ == "__main__":
     write_to_sql()
     # build_dialect_database()
-

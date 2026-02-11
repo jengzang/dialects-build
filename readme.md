@@ -39,21 +39,29 @@
 - 📄 **支持多種格式**：Excel (.xlsx/.xls)、Word (.docx)、TSV/CSV 等
 - 🎵 **提取音韻信息**：自動識別聲母、韻母、聲調，支持 IPA 和粵拼
 - 🗄️ **構建數據庫**：生成優化的 SQLite 數據庫，支持百萬級數據查詢
-- 🌏 **地理坐標**：自動轉換百度坐標到 GCJ-02（火星坐標系）
+- 🌏 **地理坐標**：自動轉換百度坐標到 GCJ-02（火星坐標系）/WGS84坐標系
 - 🔤 **簡繁轉換**：基於正字表和 OpenCC 的多層級轉換
 - ⚡ **高性能處理**：批量插入、內存日志、復合索引優化
 
 ### 數據庫結構
 
-生成三個核心數據庫：
+生成三個核心數據庫（根據用戶模式不同，生成不同文件）：
 
 1. **characters.db**：存儲每個漢字的中古地位
-   - 欄位：["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "漢字", "多地位標記"]
+   - 文件名：`characters.db`（admin 和 user 模式共用）
+   - 欄位：["攝", "呼", "等", "韻", "入", "調", "清濁", "系", "組", "母", "部位", "方式", "漢字", "釋義", "多地位標記", "多聲母", "多等", "多韻", "多調"]
 
-2. **dialects_all.db**：存儲每個方言點的聲韻調信息
+2. **方言音韻數據庫**（概念名稱：dialects_all.db）
+   - Admin 模式：`dialects_admin.db`
+   - User 模式：`dialects_user.db`
+   - 內容：每個方言點的聲韻調信息
    - 欄位：["簡稱", "漢字", "音節", "聲母", "韻母", "聲調", "註釋", "多音字"]
+   - 注意：文件較大（可能數 GB），實際使用時可能需要移動到其他路徑
 
-3. **dialects_query.db**：記錄每個地點的經緯度、行政區劃、調值、分區等信息
+3. **方言查詢數據庫**（概念名稱：dialects_query.db）
+   - Admin 模式：`query_admin.db`
+   - User 模式：`query_user.db`
+   - 內容：地理信息、經緯度、行政區劃、調值、分區等元數據
    - 包含地理信息、聲調系統（T1~T10）、行政區劃等多個欄位
 
 ### 性能指標
@@ -123,16 +131,19 @@ cd chars
 pip install -r requirements.txt
 
 # 3. 準備數據
-# 將字表文件放入 data/raw/ 目錄
+將字表文件放入 data/raw/ 目錄
 
 # 4. 配置元表
-# 在 data/dependency/jengzang補充.xlsx 中填寫字表信息
+在 data/dependency/補充.xlsx 中填寫字表信息
 
 # 5. 執行預處理
 python build.py -u admin -t convert needchars sync chars
 
-# 6. 查看生成的數據庫
-# data/dialects_all.db, data/dialects_query.db, data/characters.db
+# 6. 查看生成的數據庫（Admin 模式）
+data/dialects_admin.db, data/query_admin.db, data/characters.db
+
+# 或（User 模式）
+ata/dialects_user.db, data/query_user.db, data/characters.db
 ```
 
 ---
@@ -186,10 +197,10 @@ pip install opencc==1.1.9
 
 1. excel/word各類格式的字表轉tsv
 2. 提取轉好的tsv數據每個字、音對應的聲母、韻母、聲調，寫入數據庫
-3. 最後生成三個數據庫：
-   - characters.db: 存每個漢字的中古地位
-   - dialects_all.db: 存每個方言點聲韻調信息
-   - dialects_query.db: 記錄每個地點的經緯度、行政區劃、調值、分區等信息
+3. 最後生成三個數據庫（根據 `-u` 參數決定文件名）：
+   - `characters.db`: 存每個漢字的中古地位（所有模式共用）
+   - 方言音韻數據庫（admin: `dialects_admin.db`, user: `dialects_user.db`）: 存每個方言點聲韻調信息
+   - 方言查詢數據庫（admin: `query_admin.db`, user: `query_user.db`）: 記錄每個地點的經緯度、行政區劃、調值、分區等信息
 
 #### 🔧 使用方法
 
@@ -203,9 +214,15 @@ python build.py [選項]
 
 指定寫入的數據庫類型。可以是 admin 或 user。默認是 admin。
 
-| 值 | 說明 | 包含數據 |
-|----|------|---------| `admin` | 管理員模式（預設） | `data/processed/` + `data/yindian/` |
-| `user` | 普通用戶模式 | 僅 `data/yindian/` |
+| 值 | 說明 | 包含數據 | 生成數據庫 |
+|----|------|---------|-----------|
+| `admin` | 管理員模式（預設） | `data/processed/` + `data/yindian/` | `dialects_admin.db`, `query_admin.db`, `characters.db` |
+| `user` | 普通用戶模式 | 僅 `data/yindian/` | `dialects_user.db`, `query_user.db`, `characters.db` |
+
+**數據庫文件大小注意**：
+- `dialects_admin.db` 和 `dialects_user.db` 可能達到數 GB
+- 如果磁盤空間有限，可以將這些文件移動到其他路徑存儲
+- `query_*.db` 和 `characters.db` 文件較小（通常 < 50 MB）
 
 具體區別是，user只寫入yindian文件夾下的數據，用於我的網站區分普通用戶和管理員數據庫。如果是自用，默認admin即可。
 
@@ -221,6 +238,7 @@ python build.py [選項]
 | `sync` | 同步存儲標記 | 在查詢庫中標記已存儲的方言點 |
 | `chars` | 寫入中古地位表 | 從 聲韻.xlsx 生成 characters.db |
 | `append` | 追加模式 | 只更新配置中標記為"待更新"的項 |
+| `update` | 增量更新模式 | 從 `data/raw/pull_yindian/` 目錄讀取 TSV 文件並更新到數據庫中，用於外部數據源的增量同步 |
 
 **注意**：不給參數，則默認把 processed 裡面的 tsv 寫入數據庫。
 
@@ -245,6 +263,12 @@ python build.py -u user
 # 【增量更新】只更新特定方言點
 python build.py -u admin -t convert needchars append sync
 
+# 【增量更新】從 pull_yindian 目錄更新數據
+python build.py -u admin -t update sync
+
+# 【組合更新】轉換新文件並增量更新
+python build.py -u admin -t convert update sync
+
 # 【僅更新查詢庫】重建方言點元數據
 python build.py -u admin -t query sync
 ```
@@ -265,7 +289,7 @@ python build.py -u admin -t query sync
 #### 使用方法
 
 ```bash
-python utils.py -t [CHECK|jyut|MERGE]
+python utils.py -t [CHECK|jyut|MERGE|COMPARE|CLEANUP]
 ```
 
 #### 功能說明
@@ -376,11 +400,54 @@ python utils.py -t MERGE
 
 ![img](data/images/img_019.png)
 
+##### COMPARE - 文件差異比較
+
+比較 `yindian` 和 `pull_yindian` 目錄的文件差異，用於檢查增量更新的內容。
+
+```bash
+python utils.py -t COMPARE
+```
+
+**功能**：
+- 對比兩個目錄下的 TSV 文件
+- 識別新增、修改、刪除的文件
+- 生成詳細的差異報告
+- 導出報告到 `data/yindian_comparison_report.txt`
+
+**使用場景**：
+- 在執行 `update` 參數前，先檢查有哪些變化
+- 驗證外部數據源更新的內容
+- 追蹤方言點數據的變更歷史
+
+##### CLEANUP - 重複文件清理
+
+清理 `yindian` 和 `processed` 目錄下的重複文件，避免數據冗餘。
+
+```bash
+python utils.py -t CLEANUP
+```
+
+**功能**：
+- 掃描 `data/yindian/` 和 `data/processed/` 目錄
+- 識別完全相同的重複文件（基於內容 hash）
+- 列出重複文件列表供用戶確認
+- 導出清理報告到 `data/cleanup_report.txt`
+
+**注意**：
+- 默認需要用戶手動確認才刪除（`auto_confirm=False`）
+- 建議在清理前先備份數據
+- 清理後需要重新運行 `sync` 以更新存儲標記
+
 ---
 
 ## 數據庫架構
 
 ### 1. dialects_query.db（方言點查詢庫）
+
+> **數據庫文件名稱：**
+> - Admin 模式：`query_admin.db`
+> - User 模式：`query_user.db`
+> - 概念名稱：`dialects_query.db`（指代以上兩個文件）
 
 **表：dialects**
 
@@ -392,21 +459,54 @@ python utils.py -t MERGE
 | 經緯度 | TEXT | GCJ-02 坐標 | 23.13,113.26 |
 | 地圖集二分區 | TEXT | 地圖分區 | 粵語-珠江三角洲 |
 | 音典分區 | TEXT | 音典分區 | 粵語-廣東-珠江 |
-| T1陰平 ~ T10輕聲 | TEXT | 十種聲調值 | 454, 33, 42 等 |
+| 省 | TEXT | 省級行政區 | 廣東、浙江 |
+| 市 | TEXT | 市級行政區 | 廣州、杭州 |
+| 縣 | TEXT | 縣級行政區 | 番禺、蕭山 |
+| 鎮 | TEXT | 鎮級行政區 | 石碁、臨浦 |
+| 行政村 | TEXT | 行政村 | 石碁村 |
+| 自然村 | TEXT | 自然村 | 東沙村 |
+| T1陰平 | TEXT | 第一調（陰平） | 55, 33 等 |
+| T2陽平 | TEXT | 第二調（陽平） | 21, 24 等 |
+| T3陰上 | TEXT | 第三調（陰上） | 35, 52 等 |
+| T4陽上 | TEXT | 第四調（陽上） | 11, 13 等 |
+| T5陰去 | TEXT | 第五調（陰去） | 33, 55 等 |
+| T6陽去 | TEXT | 第六調（陽去） | 22, 11 等 |
+| T7陰入 | TEXT | 第七調（陰入） | 5, 3 等 |
+| T8陽入 | TEXT | 第八調（陽入） | 2, 1 等 |
+| T9其他調 | TEXT | 第九調（其他調類） | 214, 323 等 |
+| T10輕聲 | TEXT | 第十調（輕聲） | 1, 0 等 |
+| 字表來源（母本） | TEXT | 字表來源 | 漢字音典、自錄 |
+| 方言島 | TEXT | 是否為方言島 | 1/NULL |
+| 地圖級別 | TEXT | 地圖顯示級別 | 1/2/3 |
 | 存儲標記 | INTEGER | 是否有數據 | 1/NULL |
 
-**索引**：
+**索引（8 個）**：
 ```sql
+-- 基礎索引
 CREATE UNIQUE INDEX idx_dialects_code ON dialects(簡稱);
 CREATE INDEX idx_dialects_yindian_zone ON dialects(音典分區);
 CREATE INDEX idx_dialects_atlas_zone ON dialects(地圖集二分區);
 CREATE INDEX idx_dialects_flag ON dialects(存儲標記);
+
+-- 復合索引
 CREATE INDEX idx_dialects_code_flag ON dialects(簡稱, 存儲標記);
+
+-- 存儲標記相關（性能優化）
+CREATE INDEX idx_dialects_storage ON dialects(存儲標記, 簡稱);
+CREATE INDEX idx_query_partition_storage ON dialects(音典分區, 存儲標記);
+CREATE INDEX idx_query_atlas_storage ON dialects(地圖集二分區, 存儲標記);
 ```
 
 ---
 
 ### 2. dialects_all.db（字音數據庫）
+
+> **數據庫文件名稱：**
+> - Admin 模式：`dialects_admin.db`
+> - User 模式：`dialects_user.db`
+> - 概念名稱：`dialects_all.db`（指代以上兩個文件）
+>
+> **注意：** 這兩個數據庫文件較大（可能數 GB），實際使用時可能需要移動到其他路徑存儲。
 
 **表：dialects**
 
@@ -421,7 +521,7 @@ CREATE INDEX idx_dialects_code_flag ON dialects(簡稱, 存儲標記);
 | 註釋 | TEXT | 注釋信息 | 文讀;書面語 |
 | 多音字 | TEXT | 多音字標記 | 1/NULL |
 
-**索引（優化性能）**：
+**索引（11 個，優化性能）**：
 ```sql
 -- 單列索引
 CREATE INDEX idx_dialects_abbr ON dialects(簡稱);
@@ -433,6 +533,14 @@ CREATE INDEX idx_dialects_polyphonic ON dialects(多音字);
 CREATE INDEX idx_dialects_char_abbr ON dialects(漢字, 簡稱);
 CREATE INDEX idx_dialects_abbr_char ON dialects(簡稱, 漢字);
 CREATE INDEX idx_dialects_abbr_char_syllable ON dialects(簡稱, 漢字, 音節);
+
+-- 音韻檢索索引（聲韻調查詢優化）
+CREATE INDEX idx_dialects_abbr_initial ON dialects(簡稱, 聲母);
+CREATE INDEX idx_dialects_abbr_final ON dialects(簡稱, 韻母);
+CREATE INDEX idx_dialects_abbr_tone ON dialects(簡稱, 聲調);
+
+-- 多音字復合索引
+CREATE INDEX idx_dialects_polyphonic_full ON dialects(多音字, 簡稱, 漢字);
 ```
 
 **查詢範例**：
@@ -470,18 +578,78 @@ SELECT 簡稱, COUNT(DISTINCT 漢字) as 字數 FROM dialects GROUP BY 簡稱;
 | 漢字 | TEXT | 漢字 | 時 |
 | 釋義 | TEXT | 釋義 | 四時也 |
 | 多地位標記 | TEXT | 多地位標記 | 1/NULL |
+| 多聲母 | TEXT | 多聲母標記 | 1/NULL |
+| 多等 | TEXT | 多等標記 | 1/NULL |
+| 多韻 | TEXT | 多韻標記 | 1/NULL |
+| 多調 | TEXT | 多調標記 | 1/NULL |
 
-**索引**：
+**字段總數**：18 個（基礎字段 14 個 + 變異標記字段 5 個）
+
+**索引（20+ 個）**：
 ```sql
+-- 單列索引（18 個，每個字段一個）
 CREATE INDEX idx_characters_漢字 ON characters(漢字);
 CREATE INDEX idx_characters_攝 ON characters(攝);
 CREATE INDEX idx_characters_呼 ON characters(呼);
--- ... 其他 12 個單列索引
+CREATE INDEX idx_characters_等 ON characters(等);
+CREATE INDEX idx_characters_韻 ON characters(韻);
+CREATE INDEX idx_characters_入 ON characters(入);
+CREATE INDEX idx_characters_調 ON characters(調);
+CREATE INDEX idx_characters_清濁 ON characters(清濁);
+CREATE INDEX idx_characters_系 ON characters(系);
+CREATE INDEX idx_characters_組 ON characters(組);
+CREATE INDEX idx_characters_母 ON characters(母);
+CREATE INDEX idx_characters_部位 ON characters(部位);
+CREATE INDEX idx_characters_方式 ON characters(方式);
+CREATE INDEX idx_characters_多地位標記 ON characters(多地位標記);
+CREATE INDEX idx_characters_多聲母 ON characters(多聲母);
+CREATE INDEX idx_characters_多等 ON characters(多等);
+CREATE INDEX idx_characters_多韻 ON characters(多韻);
+CREATE INDEX idx_characters_多調 ON characters(多調);
+
+-- 復合索引（性能優化，用於組合查詢）
+CREATE INDEX idx_characters_攝等漢字 ON characters(攝, 等, 漢字);
+CREATE INDEX idx_characters_攝呼漢字 ON characters(攝, 呼, 漢字);
+CREATE INDEX idx_characters_組母攝韻調 ON characters(組, 母, 攝, 韻, 調);
+CREATE INDEX idx_characters_母韻調 ON characters(母, 韻, 調);
+-- ... 以及其他優化組合查詢的復合索引
 ```
+
+**變異標記字段說明**：
+- **多聲母**：標記該字在中古音是否有多個聲母讀法
+- **多等**：標記該字是否橫跨多個等第
+- **多韻**：標記該字是否有多個韻部歸屬
+- **多調**：標記該字是否有多個聲調變體
+- **多地位標記**：總標記（任一變異存在則為 1）
 
 ---
 
 ## 配置文件
+
+### 數據庫配置（common/config.py）
+
+項目會根據用戶模式（admin/user）生成不同的數據庫文件：
+
+**Admin 模式數據庫：**
+- `DIALECTS_DB_ADMIN_PATH` = `data/dialects_admin.db`（音韻數據庫）
+- `QUERY_DB_ADMIN_PATH` = `data/query_admin.db`（查詢元數據庫）
+
+**User 模式數據庫：**
+- `DIALECTS_DB_USER_PATH` = `data/dialects_user.db`（音韻數據庫）
+- `QUERY_DB_USER_PATH` = `data/query_user.db`（查詢元數據庫）
+
+**共用數據庫：**
+- `CHARACTERS_DB_PATH` = `data/characters.db`（中古音地位庫）
+
+**向後兼容性：**
+代碼中保留了舊的常量名 `DIALECTS_DB_PATH` 和 `QUERY_DB_PATH`，它們默認指向 admin 模式的數據庫。
+
+**注意：**
+- `dialects_admin.db` 和 `dialects_user.db` 文件可能非常大（數 GB）
+- 如需節省磁盤空間，可以在生成後移動到其他存儲位置
+- `query_*.db` 文件通常較小（1-2 MB）
+
+---
 
 ### 核心配置：jengzang補充.xlsx
 
@@ -586,6 +754,26 @@ col_map = {
 ### 粵拼轉換失敗
 
 **解決**：確認配置中"拼音"列為"粵拼"，"字聲韻調註列名"用括號標記粵拼列
+
+
+### update 模式沒有效果
+
+**問題**：使用 `-t update` 參數後數據沒有更新
+
+**解決**：
+- 確認 `data/raw/pull_yindian/` 目錄存在且包含 TSV 文件
+- 檢查文件名是否與配置中的 `簡稱` 匹配
+- 運行後需要使用 `-t sync` 同步存儲標記
+- 推薦組合：`python build.py -u admin -t update sync`
+
+### COMPARE 和 CLEANUP 的使用時機
+
+**問題**：何時應該使用這兩個工具？
+
+**建議**：
+- **COMPARE**：在執行 `update` 前，先查看有哪些文件變化
+- **CLEANUP**：定期清理（例如每季度一次），避免重複數據堆積
+- 兩者都會生成報告文件，可以保存作為數據管理記錄
 
 ---
 
