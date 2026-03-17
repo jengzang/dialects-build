@@ -794,8 +794,8 @@ def sync_dialects_flags(all_db_path=DIALECTS_DB_PATH,
     print(" 同步完成。已更新存儲標記。")
 
 
-def process_phonology_excel(
-        excel_file=PHO_TABLE_PATH,
+def _legacy_process_phonology_excel(
+        excel_file=PHONOLOGY_TABLE_SPEC.file_path,
         sheet_name="層級",
         db_file=CHARACTERS_DB_PATH,
         log_file=WRITE_INFO_LOG
@@ -871,13 +871,17 @@ def process_phonology_excel(
             conn.execute(sql)
             print(f"   [三列索引] ({col1}, {col2}, 漢字)")
 
-        #  【优先级中】用于 status_arrange_pho.py 的分组统计（組→母→攝→韻→調）
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_hierarchy ON characters(組, 母, 攝, 韻, 調);")
-        print(f"   [五列索引] (組, 母, 攝, 韻, 調) - 用于分组统计")
+        #  【优先级高】层级复合索引 - 用于多条件过滤查询（根据后端邮件要求）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_hierarchy ON characters(組, 等, 攝, 呼, 韻, 調);")
+        print(f"   [六列索引] (組, 等, 攝, 呼, 韻, 調) - 层级复合索引")
 
         #  【优先级中】用于等级查询（等=三的特殊处理）
         conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_grade ON characters(等, 漢字);")
         print(f"   [复合索引] (等, 漢字) - 用于等级查询")
+
+        #  【优先级高】多地位标记复合索引 - 用于多地位字符检测（根据后端邮件要求）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_multi_position ON characters(多地位標記, 漢字);")
+        print(f"   [复合索引] (多地位標記, 漢字) - 多地位检测")
 
         # 2. 准备所有需要处理的列（排除“釋義”，加上“多地位標記”）
         all_index_candidates = [col for col in write_columns if col != "釋義"]
@@ -955,7 +959,7 @@ def merge_text_into_meaning(df, meaning_column="釋義", note_column=None, note_
     return result.drop(columns=[note_column])
 
 
-def chinese_numeral_to_int(text):
+def _legacy_chinese_numeral_to_int(text):
     """
     把簡單中文數字轉為整數，足夠處理本項目中的韻序。
     """
@@ -987,7 +991,7 @@ def chinese_numeral_to_int(text):
     return digits.get(text)
 
 
-def split_menggu_yunbu_columns(df):
+def _legacy_split_menggu_yunbu_columns(df):
     """
     將蒙古字韻的韻部拆成韻序與純韻部名。
     """
@@ -1000,7 +1004,7 @@ def split_menggu_yunbu_columns(df):
     return result
 
 
-def split_zhongyuan_yunmu_columns(df):
+def _legacy_split_zhongyuan_yunmu_columns(df):
     """
     將中原音韻的韻母拆成韻母本體、呼、等。
     """
@@ -1014,7 +1018,7 @@ def split_zhongyuan_yunmu_columns(df):
     return result
 
 
-def prepare_character_source_dataframe(
+def _legacy_prepare_character_source_dataframe(
         df,
         columns=None,
         drop_unnamed=False,
@@ -1063,7 +1067,7 @@ def prepare_character_source_dataframe(
     return result.fillna("")
 
 
-def filter_fenyun_cuoyao_rows(df):
+def _legacy_filter_fenyun_cuoyao_rows(df):
     """
     分韻撮要只保留單字字頭，濾掉問號與非單字記錄。
     """
@@ -1071,10 +1075,17 @@ def filter_fenyun_cuoyao_rows(df):
     return df[(hanzi != "?") & (hanzi.str.len() == 1)]
 
 
-def write_character_source_table(conn, table_name, df, single_index_columns=None, pair_index_columns=None, char_column=None):
+def write_character_source_table(conn, table_name, df, single_index_columns=None, pair_index_columns=None, char_column=None, hierarchy_index=None):
     """
     將整理好的 DataFrame 寫入 characters.db 的指定表。
     """
+    # 添加多地位标记列（如果有 char_column）
+    if char_column and char_column in df.columns:
+        dup_counts = df[char_column].value_counts()
+        df = df.copy()
+        df["多地位標記"] = df[char_column].map(lambda x: "1" if dup_counts.get(x, 0) > 1 else "")
+        print(f"   [多地位] 检测到 {(df['多地位標記'] == '1').sum()} 个多地位字符")
+
     df.to_sql(table_name, conn, if_exists="replace", index=False)
     print(f"已寫入表 {table_name}: {len(df)} 行")
 
@@ -1093,8 +1104,23 @@ def write_character_source_table(conn, table_name, df, single_index_columns=None
                 )
                 print(f"   [索引] {table_name}({col}, {char_column})")
 
+    # 创建层级复合索引（根据后端邮件要求）
+    if hierarchy_index:
+        valid_columns = [col for col in hierarchy_index if col in df.columns]
+        if valid_columns:
+            index_name = f"idx_{table_name}_hierarchy"
+            columns_sql = ", ".join(f'"{col}"' for col in valid_columns)
+            conn.execute(f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{table_name}"({columns_sql});')
+            print(f"   [层级索引] {table_name}({', '.join(valid_columns)})")
 
-def write_additional_character_tables(conn):
+    # 创建多地位标记复合索引（如果有多地位标记列）
+    if char_column and "多地位標記" in df.columns:
+        index_name = f"idx_{table_name}_multi_position"
+        conn.execute(f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{table_name}"("多地位標記", "{char_column}");')
+        print(f"   [多地位索引] {table_name}(多地位標記, {char_column})")
+
+
+def _legacy_write_additional_character_tables(conn):
     """
     將其他歷史音資料寫入同一個 characters.db。
     """
@@ -1125,6 +1151,7 @@ def write_additional_character_tables(conn):
             "char_column": "漢字",
             "single_index_columns": ["漢字"],
             "pair_index_columns": ["聲調", "韻部", "聲母", "聲類", "清濁"],
+            "hierarchy_index": ["聲母", "韻部", "聲調", "清濁"],  # 层级复合索引
         },
         {
             "table_name": "menggu",
@@ -1138,6 +1165,7 @@ def write_additional_character_tables(conn):
             "char_column": "漢字",
             "single_index_columns": ["漢字"],
             "pair_index_columns": ["聲調", "韻部"],
+            "hierarchy_index": ["韻部", "聲調"],  # 层级复合索引
         },
         {
             "table_name": "old_chinese",
@@ -1154,6 +1182,7 @@ def write_additional_character_tables(conn):
             "char_column": "漢字",
             "single_index_columns": ["漢字"],
             "pair_index_columns": ["聲調", "聲母", "韻母", "韻部", "聲母組", "諧聲域", "r介音", "非三等"],
+            "hierarchy_index": ["聲母", "韻母", "韻部", "聲調"],  # 层级复合索引
         },
         {
             "table_name": "zhongyuan",
@@ -1444,6 +1473,199 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
     else:
         print(f"  ✅ 總執行時間: {total_seconds:.2f}秒")
     print(f"{'=' * 60}\n")
+
+
+def _spec_value(spec, key, default=None):
+    if spec is None:
+        return default
+    if isinstance(spec, dict):
+        return spec.get(key, default)
+    return getattr(spec, key, default)
+
+
+def prepare_character_source_dataframe(
+        df,
+        columns=None,
+        drop_unnamed=False,
+        row_filter=None,
+        transform_func=None,
+        rename_columns=None,
+        merge_text_spec=None,
+        final_columns=None,
+):
+    """
+    整理來源表結構，只保留指定欄位。
+    """
+    result = df.copy()
+    if drop_unnamed:
+        result = result.loc[:, ~result.columns.astype(str).str.startswith("Unnamed:")]
+
+    if columns is not None:
+        missing = [col for col in columns if col not in result.columns]
+        if missing:
+            raise KeyError(f"缺少必要欄位: {missing}")
+        result = result[list(columns)].copy()
+
+    if row_filter is not None:
+        result = row_filter(result).copy()
+
+    if transform_func is not None:
+        result = transform_func(result).copy()
+
+    if merge_text_spec is not None:
+        result = merge_text_into_meaning(
+            result,
+            meaning_column=_spec_value(merge_text_spec, "meaning_column", "釋義"),
+            note_column=_spec_value(merge_text_spec, "note_column"),
+            note_label=_spec_value(merge_text_spec, "note_label", "注釋"),
+        )
+
+    if rename_columns:
+        result = result.rename(columns=dict(rename_columns))
+
+    if final_columns is not None:
+        missing = [col for col in final_columns if col not in result.columns]
+        if missing:
+            raise KeyError(f"缺少整理後欄位: {missing}")
+        result = result[list(final_columns)].copy()
+
+    return result.fillna("")
+
+
+def process_phonology_excel(
+        excel_file=PHONOLOGY_TABLE_SPEC.file_path,
+        sheet_name=PHONOLOGY_TABLE_SPEC.sheet_name,
+        db_file=CHARACTERS_DB_PATH,
+        log_file=WRITE_INFO_LOG
+):
+    os.makedirs("data", exist_ok=True)
+
+    spec = PHONOLOGY_TABLE_SPEC
+    source_columns = list(spec.source_columns)
+    rename_columns = dict(spec.rename_columns)
+    write_columns = list(spec.final_columns)
+    char_column = spec.char_column
+    duplicate_flag_column = spec.duplicate_flag_column
+
+    try:
+        df = pd.read_excel(excel_file, sheet_name=sheet_name, dtype=str, keep_default_na=False, na_filter=False)
+    except Exception as e:
+        print(f" 讀取 Excel 失敗: {e}")
+        return
+
+    try:
+        df = df[source_columns].rename(columns=rename_columns)
+    except KeyError as e:
+        print(f" 缺少必要欄位: {e}")
+        return
+
+    df = df[df[char_column].notna() & (df[char_column].str.strip() != "")]
+    df["num"] = df.index + 2
+
+    exempt_columns = set(spec.missing_check_exempt_columns) | {"num"}
+    check_cols = [col for col in df.columns if col not in exempt_columns]
+    invalid_rows = df[df[check_cols].isnull().any(axis=1)]
+    df_valid = df.drop(index=invalid_rows.index)
+    df_unique = df_valid.drop_duplicates(subset=write_columns).copy()
+
+    dup_counts = df_unique[char_column].value_counts()
+    df_unique[duplicate_flag_column] = df_unique[char_column].map(
+        lambda value: "1" if dup_counts.get(value, 0) > 1 else ""
+    )
+
+    if not invalid_rows.empty:
+        invalid_output = invalid_rows[["num", char_column] + check_cols]
+        print("發現欄位缺漏如下：")
+        print(invalid_output)
+
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(invalid_output.to_csv(index=False, sep="\t", lineterminator="\n"))
+
+    try:
+        conn = sqlite3.connect(db_file)
+        df_unique.drop(columns=["num"]).to_sql(spec.table_name, conn, if_exists="replace", index=False)
+        print("開始建立索引...")
+
+        for position, (col1, col2) in enumerate(spec.triple_indexes):
+            index_name = f"idx_{spec.table_name}_triple_{position}"
+            conn.execute(
+                f'CREATE INDEX IF NOT EXISTS "{index_name}" '
+                f'ON "{spec.table_name}"("{col1}", "{col2}", "{char_column}");'
+            )
+            print(f"   [三列索引] ({col1}, {col2}, {char_column})")
+
+        for position, columns in enumerate(spec.multi_column_indexes):
+            index_name = f"idx_{spec.table_name}_multi_{position}"
+            joined_columns = ", ".join(f'"{col}"' for col in columns)
+            conn.execute(
+                f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{spec.table_name}"({joined_columns});'
+            )
+            print(f"   [多列索引] ({', '.join(columns)})")
+
+        for col in spec.composite_index_columns:
+            index_name = f"idx_{spec.table_name}_{col}_hanzi"
+            conn.execute(
+                f'CREATE INDEX IF NOT EXISTS "{index_name}" '
+                f'ON "{spec.table_name}"("{col}", "{char_column}");'
+            )
+            print(f"   [聯合索引] ({col}, {char_column})")
+
+        for col in spec.single_index_columns:
+            if col == char_column:
+                index_name = f"idx_{spec.table_name}_{char_column}"
+                conn.execute(
+                    f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{spec.table_name}"("{char_column}");'
+                )
+            else:
+                index_name = f"idx_{spec.table_name}_{col}"
+                conn.execute(
+                    f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{spec.table_name}"("{col}");'
+                )
+            print(f"   [單列索引] {col}")
+
+        write_additional_character_tables(conn)
+        conn.commit()
+        conn.close()
+        print(" 索引優化完成！")
+    except Exception as e:
+        print(f" SQLite 寫入失敗: {e}")
+
+
+def write_additional_character_tables(conn):
+    """
+    將其他歷史音資料寫入同一個 characters.db。
+    """
+    for table_name in LEGACY_CHARACTER_TABLE_NAMES:
+        conn.execute(f'DROP TABLE IF EXISTS "{table_name}";')
+
+    for spec in ADDITIONAL_CHARACTER_TABLE_SPECS:
+        try:
+            df = read_character_source_table(
+                spec.file_path,
+                file_type=spec.file_type,
+                sheet_name=spec.sheet_name,
+            )
+            df = prepare_character_source_dataframe(
+                df,
+                columns=spec.columns,
+                drop_unnamed=spec.drop_unnamed,
+                row_filter=spec.row_filter,
+                transform_func=spec.transform_func,
+                rename_columns=spec.rename_columns,
+                merge_text_spec=spec.merge_text_spec,
+                final_columns=spec.final_columns,
+            )
+            write_character_source_table(
+                conn,
+                spec.table_name,
+                df,
+                single_index_columns=spec.single_index_columns,
+                pair_index_columns=spec.pair_index_columns,
+                char_column=spec.char_column,
+                hierarchy_index=spec.hierarchy_index,
+            )
+        except Exception as e:
+            raise RuntimeError(f"寫入附加表 {spec.table_name} 失敗: {e}") from e
 
 
 if __name__ == "__main__":
