@@ -16,11 +16,10 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-# 韵部查找表：韵母 -> 韵部
+# 韵部查找表：完整韵母 -> 韵部
 YUNBU_MAP = {
     # 无韵尾
-    'y': '魚', 'i': '支', 'o': '侯', 'u': '幽u',
-    'a': '歌a', 'e': '支',  # 单独的a和e
+    'a': '魚', 'e': '支', 'o': '侯', 'y': '之', 'i': '脂', 'u': '幽u',
     # j韵尾
     'aj': '歌a', 'oj': '歌o', 'yj': '微y', 'uj': '微u',
     # w韵尾
@@ -106,52 +105,70 @@ def identify_tone(pinyin_str):
     return tone_map.get(last_char, '平聲')
 
 
+def find_yunbu(yun_mu):
+    """
+    根据完整韵母查找韵部
+    """
+    if yun_mu == 'ar':
+        return '元ar'
+    if yun_mu == 'or':
+        return '元or'
+    return YUNBU_MAP.get(yun_mu, '')
+
+
 def extract_components(pinyin_str, char=''):
     """
     提取声母、韵母、韵部等音韵要素
+    处理顺序固定为: q/h -> yps -> s
     """
     if not pinyin_str:
         return None
 
-    original_pinyin = pinyin_str
+    working = pinyin_str
 
-    # 去除声调标记
-    if len(pinyin_str) >= 2 and pinyin_str[-1] in ['q', 'h']:
-        pinyin_str = pinyin_str[:-1]  # 只去掉最后一个字符，不是两个！
+    # 先处理 q/h 声调标记。伪代码中写作删掉末尾替换后的整段标记，
+    # 当前脚本直接处理原始拼音，因此只去掉最后一个 q/h 字符。
+    if working[-1] in ['q', 'h']:
+        working = working[:-1]
 
-    # 特殊处理: yps韵
-    if pinyin_str == 'yps':
-        if len(pinyin_str) > 0 and pinyin_str[0] in ['t', 'd', 'n', 's']:
-            yun_bu = '物u'
-        else:
-            yun_bu = '物y'
+    # 再处理 yps 韵。这里判断的是韵是否为 yps，而不是整串字面必须等于 yps。
+    if working.endswith('yps'):
+        sheng_mu = working[:-3]
+        if sheng_mu in ['t', 'd', 'n', 's']:
+            return {
+                '韵部': '物u',
+                '声母': sheng_mu,
+                '韵母': 'ut',
+                '声母组': '',
+                'r介音': False,
+                '非三等': False
+            }
         return {
-            '韵部': yun_bu,
-            '声母': pinyin_str[0] if pinyin_str else '',
-            '韵母': 'ps',
+            '韵部': '物y',
+            '声母': sheng_mu,
+            '韵母': 'yt',
             '声母组': '',
             'r介音': False,
             '非三等': False
         }
 
-    # 去声's'转换为't'
-    if len(pinyin_str) > 0 and pinyin_str[-1] == 's':
-        pinyin_str = pinyin_str[:-1] + 't'
+    # 最后处理去声 s，把它改写成 t。
+    if working[-1] == 's':
+        working = working[:-1] + 't'
 
-    # 查找元音位置
-    vowel_pos = find_vowel_position(pinyin_str)
+    # 查找元音位置，韵母保留完整韵尾，例如 at / eng / iwk。
+    vowel_pos = find_vowel_position(working)
     if vowel_pos is None:
         return None
 
-    # 分离韵母和声母（修正：应该是从元音到结尾，从开头到元音）
-    yun_mu = pinyin_str[vowel_pos:]  # 从元音位置到结尾
-    sheng_mu = pinyin_str[:vowel_pos]  # 从开头到元音位置
+    # 分离韵母和声母
+    yun_mu = working[vowel_pos:]
+    sheng_mu = working[:vowel_pos]
 
     # 特殊字处理
     special_chars = '釃灑矖數藪棷籔數率帥率'
-    if char in special_chars:
-        if len(sheng_mu) >= 2:
-            sheng_mu = 'rh' + sheng_mu[2:]
+    if char and char in special_chars:
+        sheng_mu = 'rh' + sheng_mu[2:]
 
     # 处理r介音和非三等标记
     r_jieyin = False
@@ -173,6 +190,7 @@ def extract_components(pinyin_str, char=''):
         if sheng_mu.endswith("'"):
             sheng_mu = sheng_mu[:-1]
             fei_san_deng = True
+            sheng_mu_zu = 'R'
 
     return {
         '声母': sheng_mu,
@@ -190,6 +208,25 @@ def generate_xie_sheng_yu(sheng_mu_zu, yun_mu):
     格式: 声母组 + 大写韵母
     """
     return sheng_mu_zu + yun_mu.upper()
+
+
+def is_missing_value(value):
+    """
+    只把真正缺失的 NaN/None 当作空值。
+    字符串 'nan' 是有效内容，不能在这里过滤掉。
+    """
+    return value is None or (not isinstance(value, str) and pd.isna(value))
+
+
+def get_cell_text(row, column_name):
+    """
+    从 DataFrame 行中读取单元格文本。
+    保留字面值 'nan'，仅把真正缺失值转成空字符串。
+    """
+    value = row.get(column_name, '')
+    if is_missing_value(value):
+        return ''
+    return str(value)
 
 
 def process_ancient_chinese_pinyin(pinyin_str, char=''):
@@ -214,8 +251,8 @@ def process_ancient_chinese_pinyin(pinyin_str, char=''):
     if components is None:
         return None
 
-    # 3. 查找韵部（通过韵母查表）
-    yunbu = YUNBU_MAP.get(components['韵母'], '')
+    # 3. 查找韵部（通过完整韵母查表）
+    yunbu = find_yunbu(components['韵母'])
     if not yunbu and components.get('韵部'):
         yunbu = components['韵部']  # 使用特殊情况的韵部（如yps）
 
@@ -336,9 +373,9 @@ def main():
         for idx, row in df.iterrows():
             try:
                 # 获取字和拼音
-                char = str(row.get(df.columns[0], '')) if pd.notna(row.get(df.columns[0])) else ''
+                char = get_cell_text(row, df.columns[0])
                 pinyin_col = df.columns[2] if len(df.columns) > 2 else '拼音'
-                pinyin = str(row.get(pinyin_col, '')) if pd.notna(row.get(pinyin_col)) else ''
+                pinyin = get_cell_text(row, pinyin_col)
 
                 # 初始化结果行（即使处理失败也要保留）
                 result_row = {
@@ -355,7 +392,7 @@ def main():
                 }
 
                 # 尝试处理拼音
-                if pinyin and pinyin != 'nan' and pinyin != '':
+                if pinyin:
                     result = process_ancient_chinese_pinyin(pinyin, char)
 
                     if result:
@@ -366,16 +403,16 @@ def main():
                         # 如果计算结果为空，尝试从Excel读取
                         if not final_yunbu:
                             if len(df.columns) > 3:
-                                excel_yunbu = str(row.get(df.columns[3], '')) if pd.notna(row.get(df.columns[3])) else ''
+                                excel_yunbu = get_cell_text(row, df.columns[3])
                                 # 只使用有意义的Excel数据（排除"√"等标记）
-                                if excel_yunbu and excel_yunbu != 'nan' and excel_yunbu != '√':
+                                if excel_yunbu and excel_yunbu != '√':
                                     final_yunbu = excel_yunbu
 
                         if not final_yunmu:
                             if len(df.columns) > 4:
-                                excel_yunmu = str(row.get(df.columns[4], '')) if pd.notna(row.get(df.columns[4])) else ''
+                                excel_yunmu = get_cell_text(row, df.columns[4])
                                 # 只使用有意义的Excel数据（排除"√"等标记）
-                                if excel_yunmu and excel_yunmu != 'nan' and excel_yunmu != '√':
+                                if excel_yunmu and excel_yunmu != '√':
                                     final_yunmu = excel_yunmu
 
                         # 更新结果
@@ -393,12 +430,12 @@ def main():
                         error_count += 1
                         # 处理失败时，尝试从Excel读取数据（排除"√"等标记）
                         if len(df.columns) > 3:
-                            excel_yunbu = str(row.get(df.columns[3], '')) if pd.notna(row.get(df.columns[3])) else ''
-                            if excel_yunbu and excel_yunbu != 'nan' and excel_yunbu != '√':
+                            excel_yunbu = get_cell_text(row, df.columns[3])
+                            if excel_yunbu and excel_yunbu != '√':
                                 result_row['韵部'] = excel_yunbu
                         if len(df.columns) > 4:
-                            excel_yunmu = str(row.get(df.columns[4], '')) if pd.notna(row.get(df.columns[4])) else ''
-                            if excel_yunmu and excel_yunmu != 'nan' and excel_yunmu != '√':
+                            excel_yunmu = get_cell_text(row, df.columns[4])
+                            if excel_yunmu and excel_yunmu != '√':
                                 result_row['韵母'] = excel_yunmu
                 else:
                     error_count += 1
@@ -406,7 +443,7 @@ def main():
                 # 添加原始数据的其他列
                 for col in df.columns:
                     if col not in [df.columns[0], pinyin_col]:
-                        result_row[f'原_{col}'] = row.get(col, '')
+                        result_row[f'{col}'] = row.get(col, '')
 
                 results.append(result_row)
 

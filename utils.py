@@ -15,11 +15,11 @@ def main(TYPE):
         merge_main()
     elif TYPE == 'COMPARE':
         # 比較 yindian 和 pull_yindian 目錄的文件差異
-        from scripts.compare_yindian import run_comparison
+        from scripts.utils.compare_yindian import run_comparison
         run_comparison(detail=True, export_file='data/yindian_comparison_report.txt')
     elif TYPE == 'CLEANUP':
         # 清理 yindian 和 processed 目錄下的重複文件
-        from scripts.cleanup_duplicates import run_cleanup
+        from scripts.utils.cleanup_duplicates import run_cleanup
         run_cleanup(auto_confirm=False, export_file='data/cleanup_report.txt')
     else:
         print(f"未知的 TYPE：{TYPE}，請使用 CHECK、jyut、MERGE、COMPARE 或 CLEANUP。")

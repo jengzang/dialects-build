@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Database files (large files)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Processed data
+data/processed/*.tsv
+data/yindian/*.tsv
+data/raw/pull_yindian/*.tsv
+
+# Generated reports
+data/*_report.txt
+data/cleanup_report.txt
+data/conflict_resolutions.json
+data/characters_db_value_counts*.json
+data/characters_db_value_counts*.md
+data/characters_db_value_counts*.tsv
+
+# Logs
+logs/*.txt
+logs/*.log
+
+# Temporary files
+temp_*.txt
+*.tmp
+
+# Office temporary files
+~$*.xlsx
+~$*.docx
+~$*.xls
+
+# Claude skills temporary files
+.claude/skills/*.docx
+
+# OS
+.DS_Store
+Thumbs.db
