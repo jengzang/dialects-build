@@ -10,9 +10,14 @@ import pandas as pd
 
 from common.constants import exclude_files
 from source.change_coordinates import GPSUtil
-from common.config import (HAN_PATH, APPEND_PATH, QUERY_DB_PATH, DIALECTS_DB_PATH, CHARACTERS_DB_PATH, PHO_TABLE_PATH, \
+from common.config import (HAN_PATH, APPEND_PATH, QUERY_DB_PATH, DIALECTS_DB_PATH, CHARACTERS_DB_PATH, \
                            MISSING_DATA_LOG, WRITE_INFO_LOG, YINDIAN_DATA_DIR, UPDATE_DATA_DIR, QUERY_DB_ADMIN_PATH,
                            QUERY_DB_USER_PATH, DIALECTS_DB_ADMIN_PATH, DIALECTS_DB_USER_PATH)
+from source.character_table_specs import (
+    ADDITIONAL_CHARACTER_TABLE_SPECS,
+    LEGACY_CHARACTER_TABLE_NAMES,
+    PHONOLOGY_TABLE_SPEC,
+)
 from source.match_fromdb import scan_tsv_with_conflict_resolution
 from common.s2t import simplified2traditional, traditional2simplified
 from source.get_new import extract_all_from_files
@@ -806,7 +811,7 @@ def process_phonology_excel(
 
     # 讀取 Excel
     try:
-        df = pd.read_excel(excel_file, sheet_name=sheet_name, dtype=str)
+        df = pd.read_excel(excel_file, sheet_name=sheet_name, dtype=str, keep_default_na=False, na_filter=False)
     except Exception as e:
         print(f" 讀取 Excel 失敗: {e}")
         return
@@ -838,7 +843,7 @@ def process_phonology_excel(
     # 輸出錯誤記錄
     if not invalid_rows.empty:
         invalid_output = invalid_rows[["num", "漢字"] + check_cols]
-        print("❗ 發現欄位缺漏如下：")
+        print("發現欄位缺漏如下：")
         print(invalid_output)
 
         with open(log_file, "a", encoding="utf-8") as f:
@@ -848,7 +853,7 @@ def process_phonology_excel(
     try:
         conn = sqlite3.connect(db_file)
         df_unique.drop(columns=["num"]).to_sql("characters", conn, if_exists="replace", index=False)
-        print("➤ 開始建立索引...")
+        print("開始建立索引...")
 
         # 1. 定义那 12 个需要与"汉字"组合的核心属性
         # 这些列将建立 (Col, 漢字) 的联合索引
@@ -901,10 +906,309 @@ def process_phonology_excel(
                 conn.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON characters({col});")
                 print(f"   [单列索引] {col}")
 
+        write_additional_character_tables(conn)
+        conn.commit()
         conn.close()
         print(" 索引優化完成！")
     except Exception as e:
         print(f" SQLite 寫入失敗: {e}")
+
+
+def read_character_source_table(file_path, file_type="excel", sheet_name=0):
+    """
+    讀取寫入 characters.db 的來源表。
+    保留空字符串，不把字面值 nan 誤當作缺失值。
+    """
+    if file_type == "excel":
+        return pd.read_excel(file_path, sheet_name=sheet_name, dtype=str, keep_default_na=False, na_filter=False)
+    if file_type == "tsv":
+        return pd.read_csv(file_path, sep="\t", dtype=str, keep_default_na=False, na_filter=False)
+    raise ValueError(f"不支持的文件類型: {file_type}")
+
+
+def merge_text_into_meaning(df, meaning_column="釋義", note_column=None, note_label="注釋"):
+    """
+    把注釋/校註合併進釋義欄，避免遺失信息。
+    """
+    if not note_column or note_column not in df.columns or meaning_column not in df.columns:
+        return df
+
+    result = df.copy()
+    meaning_series = result[meaning_column].fillna("").astype(str).str.strip()
+    note_series = result[note_column].fillna("").astype(str).str.strip()
+    merged_values = []
+
+    for meaning, note in zip(meaning_series, note_series):
+        if meaning and note:
+            if meaning == note:
+                merged_values.append(meaning)
+            else:
+                merged_values.append(f"{meaning}\n{note_label}：{note}")
+        elif meaning:
+            merged_values.append(meaning)
+        elif note:
+            merged_values.append(f"{note_label}：{note}")
+        else:
+            merged_values.append("")
+
+    result[meaning_column] = merged_values
+    return result.drop(columns=[note_column])
+
+
+def chinese_numeral_to_int(text):
+    """
+    把簡單中文數字轉為整數，足夠處理本項目中的韻序。
+    """
+    digits = {
+        "零": 0,
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+
+    if not text:
+        return None
+
+    if text == "十":
+        return 10
+
+    if "十" in text:
+        left, right = text.split("十", 1)
+        tens = digits.get(left, 1) if left else 1
+        ones = digits.get(right, 0) if right else 0
+        return tens * 10 + ones
+
+    return digits.get(text)
+
+
+def split_menggu_yunbu_columns(df):
+    """
+    將蒙古字韻的韻部拆成韻序與純韻部名。
+    """
+    result = df.copy()
+    yunbu_series = result["韻部"].fillna("").astype(str).str.strip()
+    match_series = yunbu_series.str.extract(r"^([一二三四五六七八九十百]+)(.+)$")
+
+    result["韻序"] = match_series[0].map(lambda value: chinese_numeral_to_int(value) if pd.notna(value) else "")
+    result["韻部"] = match_series[1].fillna(yunbu_series)
+    return result
+
+
+def split_zhongyuan_yunmu_columns(df):
+    """
+    將中原音韻的韻母拆成韻母本體、呼、等。
+    """
+    result = df.copy()
+    yunmu_series = result["韻母"].fillna("").astype(str).str.strip()
+    match_series = yunmu_series.str.extract(r"^(.*?)([開合撮齊])([一二三四五六七八九十]+)?$")
+
+    result["韻母"] = match_series[0].fillna(yunmu_series)
+    result["呼"] = match_series[1].fillna("")
+    result["等"] = match_series[2].fillna("")
+    return result
+
+
+def prepare_character_source_dataframe(
+        df,
+        columns=None,
+        drop_unnamed=False,
+        row_filter=None,
+        transform_func=None,
+        rename_columns=None,
+        merge_text_spec=None,
+        final_columns=None,
+):
+    """
+    整理來源表結構，只保留指定欄位。
+    """
+    result = df.copy()
+    if drop_unnamed:
+        result = result.loc[:, ~result.columns.astype(str).str.startswith("Unnamed:")]
+
+    if columns is not None:
+        missing = [col for col in columns if col not in result.columns]
+        if missing:
+            raise KeyError(f"缺少必要欄位: {missing}")
+        result = result[columns].copy()
+
+    if row_filter is not None:
+        result = row_filter(result).copy()
+
+    if transform_func is not None:
+        result = transform_func(result).copy()
+
+    if merge_text_spec is not None:
+        result = merge_text_into_meaning(
+            result,
+            meaning_column=merge_text_spec.get("meaning_column", "釋義"),
+            note_column=merge_text_spec.get("note_column"),
+            note_label=merge_text_spec.get("note_label", "注釋"),
+        )
+
+    if rename_columns:
+        result = result.rename(columns=rename_columns)
+
+    if final_columns is not None:
+        missing = [col for col in final_columns if col not in result.columns]
+        if missing:
+            raise KeyError(f"缺少整理後欄位: {missing}")
+        result = result[final_columns].copy()
+
+    return result.fillna("")
+
+
+def filter_fenyun_cuoyao_rows(df):
+    """
+    分韻撮要只保留單字字頭，濾掉問號與非單字記錄。
+    """
+    hanzi = df["漢字"].astype(str).str.strip()
+    return df[(hanzi != "?") & (hanzi.str.len() == 1)]
+
+
+def write_character_source_table(conn, table_name, df, single_index_columns=None, pair_index_columns=None, char_column=None):
+    """
+    將整理好的 DataFrame 寫入 characters.db 的指定表。
+    """
+    df.to_sql(table_name, conn, if_exists="replace", index=False)
+    print(f"已寫入表 {table_name}: {len(df)} 行")
+
+    for position, col in enumerate(single_index_columns or []):
+        if col in df.columns:
+            index_name = f"idx_{table_name}_single_{position}"
+            conn.execute(f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{table_name}"("{col}");')
+            print(f"   [索引] {table_name}({col})")
+
+    if char_column and char_column in df.columns:
+        for position, col in enumerate(pair_index_columns or []):
+            if col in df.columns:
+                index_name = f"idx_{table_name}_pair_{position}"
+                conn.execute(
+                    f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{table_name}"("{col}", "{char_column}");'
+                )
+                print(f"   [索引] {table_name}({col}, {char_column})")
+
+
+def write_additional_character_tables(conn):
+    """
+    將其他歷史音資料寫入同一個 characters.db。
+    """
+    legacy_table_names = [
+        "hongwu_zhengyun_main",
+        "menggu_ziyun",
+        "shanggu_hanyu",
+        "zhongyuan_yinyun",
+        "fenyun_cuoyao",
+        "hongwu",
+        "menggu",
+        "old_chinese",
+        "zhongyuan",
+        "fenyun",
+    ]
+    for table_name in legacy_table_names:
+        conn.execute(f'DROP TABLE IF EXISTS "{table_name}";')
+
+    table_specs = [
+        {
+            "table_name": "hongwu",
+            "file_path": HONGWU_ZHENGYUN_PATH,
+            "file_type": "excel",
+            "sheet_name": "01 洪武正韻",
+            "columns": ["字", "聲調", "韻部", "聲母", "聲類", "清濁", "上字", "下字", "釋義"],
+            "rename_columns": {"字": "漢字"},
+            "final_columns": ["漢字", "聲調", "韻部", "聲母", "聲類", "清濁", "上字", "下字", "釋義"],
+            "char_column": "漢字",
+            "single_index_columns": ["漢字"],
+            "pair_index_columns": ["聲調", "韻部", "聲母", "聲類", "清濁"],
+        },
+        {
+            "table_name": "menggu",
+            "file_path": MENGGU_ZIYUN_PATH,
+            "file_type": "tsv",
+            "columns": ["韻部", "八思巴字", "聲調", "字頭", "備選異體", "釋義", "注釋", "unt轉寫", "對應切韻音系音韻地位"],
+            "transform_func": split_menggu_yunbu_columns,
+            "merge_text_spec": {"meaning_column": "釋義", "note_column": "注釋", "note_label": "注釋"},
+            "rename_columns": {"字頭": "漢字", "unt轉寫": "擬音"},
+            "final_columns": ["韻序", "韻部", "八思巴字", "聲調", "漢字", "備選異體", "釋義", "擬音", "對應切韻音系音韻地位"],
+            "char_column": "漢字",
+            "single_index_columns": ["漢字"],
+            "pair_index_columns": ["聲調", "韻部"],
+        },
+        {
+            "table_name": "old_chinese",
+            "file_path": SHANGGU_HANYU_PATH,
+            "file_type": "excel",
+            "columns": ["字", "原始音標", "聲調", "聲母", "韻母", "韻部", "聲母組", "r介音", "非三等", "諧聲域", "音",
+                        "見詩經韻", "見其他韻", "總出現次數", "先秦字頻（歸一化）", "少見詞出處", "見西周",
+                        "西周字頻（歸一化）", "釋義", "注釋"],
+            "drop_unnamed": True,
+            "rename_columns": {"字": "漢字"},
+            "final_columns": ["漢字", "原始音標", "聲調", "聲母", "韻母", "韻部", "聲母組", "r介音", "非三等", "諧聲域", "音",
+                              "見詩經韻", "見其他韻", "總出現次數", "先秦字頻（歸一化）", "少見詞出處", "見西周",
+                              "西周字頻（歸一化）", "釋義", "注釋"],
+            "char_column": "漢字",
+            "single_index_columns": ["漢字"],
+            "pair_index_columns": ["聲調", "聲母", "韻母", "韻部", "聲母組", "諧聲域", "r介音", "非三等"],
+        },
+        {
+            "table_name": "zhongyuan",
+            "file_path": ZHONGYUAN_YINYUN_PATH,
+            "file_type": "tsv",
+            "columns": ["小韻", "字", "聲母", "韻母", "聲調", "unt", "釋義", "校註"],
+            "transform_func": split_zhongyuan_yunmu_columns,
+            "merge_text_spec": {"meaning_column": "釋義", "note_column": "校註", "note_label": "校註"},
+            "rename_columns": {"字": "漢字", "unt": "擬音"},
+            "final_columns": ["小韻", "漢字", "聲母", "韻母", "呼", "等", "聲調", "擬音", "釋義"],
+            "char_column": "漢字",
+            "single_index_columns": ["漢字"],
+            "pair_index_columns": ["聲母", "韻母", "呼", "等", "聲調", "小韻"],
+        },
+        {
+            "table_name": "fenyun",
+            "file_path": FENYUN_CUOYAO_PATH,
+            "file_type": "excel",
+            "sheet_name": "YFanwan",
+            "columns": ["漢字", "聲母jp", "韻腹jp", "韻尾jp", "調類jp", "小韻", "釋義", "聲母", "韻母", "韻部", "聲調"],
+            "row_filter": filter_fenyun_cuoyao_rows,
+            "final_columns": ["漢字", "聲母jp", "韻腹jp", "韻尾jp", "調類jp", "小韻", "釋義", "聲母", "韻母", "韻部", "聲調"],
+            "char_column": "漢字",
+            "single_index_columns": ["漢字"],
+            "pair_index_columns": ["小韻", "聲母", "韻母", "韻部", "聲調"],
+        },
+    ]
+
+    for spec in table_specs:
+        try:
+            df = read_character_source_table(
+                spec["file_path"],
+                file_type=spec.get("file_type", "excel"),
+                sheet_name=spec.get("sheet_name", 0),
+            )
+            df = prepare_character_source_dataframe(
+                df,
+                columns=spec.get("columns"),
+                drop_unnamed=spec.get("drop_unnamed", False),
+                row_filter=spec.get("row_filter"),
+                transform_func=spec.get("transform_func"),
+                rename_columns=spec.get("rename_columns"),
+                merge_text_spec=spec.get("merge_text_spec"),
+                final_columns=spec.get("final_columns"),
+            )
+            write_character_source_table(
+                conn,
+                spec["table_name"],
+                df,
+                single_index_columns=spec.get("single_index_columns"),
+                pair_index_columns=spec.get("pair_index_columns"),
+                char_column=spec.get("char_column"),
+            )
+        except Exception as e:
+            raise RuntimeError(f"寫入附加表 {spec['table_name']} 失敗: {e}") from e
 
 
 def scan_update_directory():
