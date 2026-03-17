@@ -15,9 +15,13 @@
 ## 📚 目錄
 
 - [項目簡介](#項目簡介)
+- [適用對象](#適用對象)
 - [相關倉庫](#相關倉庫)
+- [項目結構](#項目結構)
 - [核心功能](#核心功能)
 - [快速開始](#快速開始)
+  - [方式一：使用示例數據（推薦新手）](#方式一使用示例數據推薦新手)
+  - [方式二：處理自己的數據](#方式二處理自己的數據)
 - [安裝指南](#安裝指南)
 - [使用說明](#使用說明)
   - [主腳本：build.py](#主腳本buildpy)
@@ -73,6 +77,134 @@
 
 ---
 
+## 項目結構
+
+```
+chars/
+├── build.py                    # 主入口：數據預處理管道
+├── utils.py                    # 輔助工具入口
+├── requirements.txt            # Python 依賴
+├── CLAUDE.md                   # Claude Code 項目指南
+│
+├── source/                     # 核心處理模塊
+│   ├── raw2tsv.py             # 格式轉換調度器
+│   ├── format_convert.py      # 三種格式處理器（音典/跳跳老鼠/縣志）
+│   ├── process_tones.py       # 聲調提取與轉換
+│   ├── tsv2sql.py             # 數據庫寫入與查詢庫構建
+│   ├── convert_jyut.py        # 粵拼轉 IPA
+│   ├── match_fromdb.py        # 字符衝突解決
+│   ├── change_coordinates.py  # 坐標系轉換（百度→GCJ-02）
+│   └── get_new.py             # 音韻數據提取
+│
+├── common/                     # 共享工具
+│   ├── config.py              # 路徑配置與數據庫定義
+│   ├── constants.py           # 常量與排除列表
+│   ├── s2t.py                 # 簡繁轉換（多層級）
+│   └── search_tones.py        # 聲調搜索工具
+│
+├── scripts/                    # 輔助腳本
+│   ├── check/                 # 字表校驗（五重檢查）
+│   │   ├── checks.py          # 主檢查流程
+│   │   ├── match_input_tip.py # 輸入提示匹配
+│   │   ├── maybe_error_chars.py # 錯字檢測
+│   │   ├── process_sp_input.py  # 特殊輸入處理
+│   │   ├── status_arrange_pho.py # 音韻狀態整理
+│   │   └── xlsx2tsv.py        # Excel 轉 TSV
+│   │
+│   ├── jyut2ipa/              # 粵拼轉換
+│   │   └── replace.py         # 批量粵拼→IPA
+│   │
+│   ├── merge/                 # 字表合併
+│   │   └── wordsheet_merge.py # 多字表合併工具
+│   │
+│   ├── sql/                   # 數據庫工具
+│   │   ├── init_wal_files.py # WAL 模式初始化
+│   │   ├── write2sql.py       # 數據寫入
+│   │   ├── write_index.py     # 索引創建
+│   │   └── write_yubao.py     # 語保數據寫入
+│   │
+│   ├── export/                # 數據導出
+│   │   ├── fanwan_sql_to_xlsx.py      # 數據庫導出為 Excel
+│   │   └── process_ancient_pinyin.py  # 上古音數據處理
+│   │
+│   └── utils/                 # 維護工具
+│       ├── cleanup_duplicates.py  # 清理重複文件
+│       ├── compare_yindian.py     # 比較 yindian 目錄差異
+│       └── test_coordinate_conversion.py # 坐標轉換測試
+│
+├── data/                       # 數據目錄
+│   ├── raw/                   # 原始字表文件
+│   ├── processed/             # 處理後的 TSV（admin 模式）
+│   ├── yindian/               # 音典 TSV（user 模式）
+│   ├── dependency/            # 依賴數據
+│   │   ├── jengzang補充.xlsx  # 核心配置文件（必需）
+│   │   ├── 聲韻.xlsx          # 中古音地位表（必需）
+│   │   ├── 正字.tsv           # 簡繁轉換表（可選）
+│   │   ├── 上古漢語.xlsx      # 上古音數據
+│   │   ├── 上古汉语音节表.xlsx # 上古音節表
+│   │   ├── 王三全字表（小韻內部未校）+3.3.xlsx # 王力音韻數據
+│   │   ├── 王三反切音韻地位表.csv # 反切音韻地位
+│   │   ├── 中原音韻.tsv       # 中原音韻數據
+│   │   ├── 洪武正韻.xlsx      # 洪武正韻數據
+│   │   ├── 分韻撮要.xlsx      # 分韻撮要數據
+│   │   └── 蒙古字韻.tsv       # 蒙古字韻數據
+│   ├── *.db                   # 生成的數據庫文件
+│   └── images/                # README 圖片
+│
+└── logs/                       # 日誌目錄
+    ├── 缺資料.txt
+    ├── write.txt
+    └── write_error.txt
+```
+
+### 核心文件說明
+
+**主入口**：
+- `build.py`：數據預處理主流程，支持 admin/user 模式
+- `utils.py`：輔助工具調度器，調用 scripts/ 下的各種工具
+
+**source/ 模塊**：
+- `raw2tsv.py`：識別字表格式並調度對應處理器
+- `format_convert.py`：包含三種格式的處理函數
+- `tsv2sql.py`：數據庫操作核心（寫入、查詢庫構建、同步）
+- `process_tones.py`：聲調映射與轉換邏輯
+
+**scripts/ 工具**：
+- `check/`：交互式字表校驗系統（5 步檢查）
+- `jyut2ipa/`：粵拼批量轉換工具
+- `merge/`：多字表合併工具
+- `sql/`：數據庫初始化與索引管理
+- `export/`：數據導出與上古音處理
+- `utils/`：文件比較、清理、測試等維護工具
+
+---
+
+## 適用對象
+
+本工具適合以下用戶：
+
+- 🎓 **語言學研究者**：需要處理方言調查數據、構建音韻數據庫
+- 📊 **數據科學家**：需要分析漢語方言的音韻模式和地理分布
+- 💻 **開發者**：需要為語言學應用提供方言數據支持
+- 📚 **方言愛好者**：想要整理和分析自己收集的方言資料
+
+### 前置知識
+
+**必需**：
+- 基本的命令行操作
+- Python 環境配置
+
+**推薦**（但非必需）：
+- 漢語音韻學基礎（了解聲母、韻母、聲調概念）
+- IPA 國際音標基礎
+- Excel 操作
+
+**不需要**：
+- 編程經驗（工具已封裝好）
+- 數據庫知識（自動生成）
+
+---
+
 ## 相關倉庫
 
 ### 相關倉庫一覽
@@ -82,6 +214,38 @@
 
 - **[前端 - Dialects JS Frontend](https://github.com/jengzang/dialects-js-frontend)**
   [![Frontend Repo Card](https://github-readme-stats.vercel.app/api/pin/?username=jengzang&repo=dialects-js-frontend&theme=dark)](https://github.com/jengzang/dialects-js-frontend)
+
+---
+
+## 核心概念與術語
+
+### 音韻學術語
+
+| 術語 | 說明 | 範例 |
+|------|------|------|
+| **聲母** | 音節開頭的輔音 | "時"字的 t、"詩"字的 ʃ |
+| **韻母** | 聲母之後的部分（包含韻腹、韻尾） | "時"字的 i、"山"字的 an |
+| **聲調** | 音高變化模式 | 陰平（55）、陽平（21）、上聲（35）等 |
+| **IPA** | 國際音標，用於精確標記語音 | [tɕi³³]、[ʃɿ⁵⁵] |
+| **粵拼** | 粵語拼音方案（Jyutping） | si4（時）、saa1（沙） |
+| **中古音** | 隋唐時期的漢語音系 | 攝、呼、等、韻、調等分類 |
+
+### 字表格式術語
+
+| 格式 | 來源 | 特點 |
+|------|------|------|
+| **音典** | 漢字音典標準 | 一字一行，最常見 |
+| **跳跳老鼠** | 民間整理方式 | 一音多字，節省空間 |
+| **縣志** | 地方志書格式 | 聲韻調分表，便於音韻分析 |
+
+### 數據庫術語
+
+| 術語 | 說明 |
+|------|------|
+| **方言點** | 一個具體的方言調查地點（如：广州、香港） |
+| **簡稱** | 方言點的唯一標識符 |
+| **多音字** | 同一個字在同一方言點有多個讀音 |
+| **文白讀** | 文讀音（書面語）vs 白讀音（口語） |
 
 ---
 
@@ -120,7 +284,9 @@
 - Python 3.8+
 - SQLite 3.x
 
-### 最小化範例
+### 方式一：使用示例數據（推薦新手）
+
+如果你是第一次使用，建議先用示例數據測試：
 
 ```bash
 # 1. 克隆項目
@@ -130,21 +296,66 @@ cd chars
 # 2. 安裝依賴
 pip install -r requirements.txt
 
-# 3. 準備數據
-將字表文件放入 data/raw/ 目錄
+# 3. 查看示例數據
+# 項目已包含示例數據在 data/github示例数据/ 目錄
+ls data/github示例数据/
 
-# 4. 配置元表
-在 data/dependency/補充.xlsx 中填寫字表信息
+# 4. 驗證安裝（可選）
+python -c "import pandas, openpyxl, opencc; print('✓ 依賴安裝成功')"
 
-# 5. 執行預處理
+# 5. 運行示例（如果有配置好的示例）
+# 注意：需要確保 data/dependency/jengzang補充.xlsx 中已配置示例數據
+python build.py -u user
+
+# 6. 查看生成的數據庫
+ls data/*.db
+```
+
+**預期結果**：
+- 生成 `data/dialects_user.db`（方言音韻數據）
+- 生成 `data/query_user.db`（地理元數據）
+- 生成 `data/characters.db`（中古音地位）
+
+### 方式二：處理自己的數據
+
+當你熟悉流程後，可以處理自己的方言字表：
+
+```bash
+# 1. 準備字表文件
+# 將你的 Excel/Word/TSV 文件放入 data/raw/ 目錄
+cp 你的字表.xlsx data/raw/
+
+# 2. 配置字表信息
+# 編輯 data/dependency/jengzang補充.xlsx
+# 填寫以下必填字段：
+#   - 簡稱：方言點名稱（如：广州、香港）
+#   - 文件名：你的字表文件名（支持通配符 *）
+#   - 字表格式：音典 / 跳跳老鼠 / 縣志
+#   - 是否有人在做：填 "已做"
+
+# 3. 執行完整預處理
 python build.py -u admin -t convert needchars sync chars
 
-# 6. 查看生成的數據庫（Admin 模式）
-data/dialects_admin.db, data/query_admin.db, data/characters.db
-
-# 或（User 模式）
-ata/dialects_user.db, data/query_user.db, data/characters.db
+# 4. 查看結果
+ls data/*.db
 ```
+
+**字表格式說明**：
+
+| 格式名稱 | 說明 | 範例 |
+|---------|------|------|
+| **音典** | 一字一行，每行包含：漢字、音標、註釋 | `時 tɕi33 四時也` |
+| **跳跳老鼠** | 一音多字，相同讀音的字放在一起 | `tɕi33 時持遲` |
+| **縣志** | 分拆表格，聲母、韻母、聲調分開整理 | 見 `data/raw/` 示例 |
+
+**Admin vs User 模式**：
+
+| 模式 | 處理範圍 | 數據庫文件 | 適用場景 |
+|------|---------|-----------|---------|
+| **admin** | `data/processed/` + `data/yindian/` | `dialects_admin.db` | 完整數據集管理 |
+| **user** | 僅 `data/yindian/` | `dialects_user.db` | 公開數據子集 |
+
+**提示**：如果只是自用，使用 `admin` 模式即可。
 
 ---
 
@@ -277,14 +488,26 @@ python build.py -u admin -t query sync
 
 ### 輔助腳本：utils.py
 
-# 📘 字表處理腳本
-
-此腳本用於運行 `scripts` 路徑下的不同程序，包括：
+此腳本用於運行 `scripts/` 路徑下的不同程序，包括：
 - 檢查字表格式和錯字
 - 粵拼轉 IPA
 - 合併字表
+- 比較文件差異
+- 清理重複文件
 
 `utils.py` 提供數據檢查、格式轉換等輔助功能。
+
+#### scripts/ 目錄組織
+
+```
+scripts/
+├── check/       字表校驗工具（五重檢查系統）
+├── jyut2ipa/    粵拼轉 IPA 工具
+├── merge/       字表合併工具
+├── sql/         數據庫操作工具
+├── export/      數據導出與上古音處理
+└── utils/       維護工具（比較、清理、測試）
+```
 
 #### 使用方法
 
@@ -657,6 +880,38 @@ CREATE INDEX idx_characters_母韻調 ON characters(母, 韻, 調);
 
 **Sheet：檔案**
 
+### 依賴數據文件說明
+
+項目依賴多個音韻學數據文件，位於 `data/dependency/` 目錄：
+
+#### 必需文件
+
+| 文件名 | 用途 | 說明 |
+|--------|------|------|
+| `jengzang補充.xlsx` | 核心配置 | 定義所有方言點的元數據、文件映射、處理參數 |
+| `聲韻.xlsx` | 中古音地位 | 用於生成 `characters.db`，包含每個漢字的攝、呼、等、韻等信息 |
+
+#### 可選文件（用於特定功能）
+
+| 文件名 | 用途 | 說明 |
+|--------|------|------|
+| `正字.tsv` | 簡繁轉換 | 自定義正字表，優先於 OpenCC |
+| `上古漢語.xlsx` | 上古音處理 | 上古漢語音韻數據 |
+| `上古汉语音节表.xlsx` | 上古音節 | 上古音節系統 |
+| `王三全字表（小韻內部未校）+3.3.xlsx` | 王力音韻 | 王力《漢語音韻》數據 |
+| `王三反切音韻地位表.csv` | 反切系統 | 反切音韻地位對照表 |
+| `中原音韻.tsv` | 近代音韻 | 中原音韻數據（元代） |
+| `洪武正韻.xlsx` | 近代音韻 | 洪武正韻數據（明代） |
+| `分韻撮要.xlsx` | 粵語音韻 | 粵語韻書數據 |
+| `蒙古字韻.tsv` | 元代音韻 | 蒙古字韻數據 |
+
+**注意**：
+- 只有 `jengzang補充.xlsx` 和 `聲韻.xlsx` 是運行 `build.py` 的必需文件
+- 其他文件用於 `scripts/export/process_ancient_pinyin.py` 等特定工具
+- 如果缺少可選文件，相關功能會被跳過，不影響主流程
+
+---
+
 ## 填表說明
 
 如果需要轉換自己的字表，需要先填寫 data/dependency/信息.xlsx
@@ -743,37 +998,163 @@ col_map = {
 
 ## 常見問題
 
-### 錯誤：找不到對應處理函數
+### 安裝與環境
 
-**解決**：檢查配置中"字表格式"是否為：音典、跳跳老鼠、縣志
-
-### 錯誤：無法匹配任何文件
-
-**解決**：檢查 data/raw/ 中是否有對應文件，調整配置中的"文件名"
-
-### 粵拼轉換失敗
-
-**解決**：確認配置中"拼音"列為"粵拼"，"字聲韻調註列名"用括號標記粵拼列
-
-
-### update 模式沒有效果
-
-**問題**：使用 `-t update` 參數後數據沒有更新
+#### Q: 安裝依賴時報錯 "No module named 'xxx'"
 
 **解決**：
-- 確認 `data/raw/pull_yindian/` 目錄存在且包含 TSV 文件
-- 檢查文件名是否與配置中的 `簡稱` 匹配
-- 運行後需要使用 `-t sync` 同步存儲標記
-- 推薦組合：`python build.py -u admin -t update sync`
+```bash
+# 確認 Python 版本
+python --version  # 需要 3.8+
 
-### COMPARE 和 CLEANUP 的使用時機
+# 重新安裝依賴
+pip install -r requirements.txt --upgrade
 
-**問題**：何時應該使用這兩個工具？
+# 如果使用虛擬環境，確保已激活
+source .venv/bin/activate  # Linux/Mac
+.venv\Scripts\activate     # Windows
+```
+
+#### Q: 如何驗證安裝是否成功？
+
+**解決**：
+```bash
+# 測試依賴
+python -c "import pandas, openpyxl, opencc; print('✓ 依賴正常')"
+
+# 測試主程序
+python build.py --help
+```
+
+### 配置與數據
+
+#### Q: 錯誤："找不到對應處理函數"
+
+**原因**：配置文件中的"字表格式"填寫錯誤
+
+**解決**：檢查 `data/dependency/jengzang補充.xlsx` 中的"字表格式"列，必須是以下之一：
+- `音典`
+- `跳跳老鼠`
+- `縣志`
+
+#### Q: 錯誤："無法匹配任何文件"
+
+**原因**：找不到對應的字表文件
+
+**解決**：
+1. 確認文件在 `data/raw/` 目錄下
+2. 檢查配置中的"文件名"是否正確
+3. 支持通配符：`广州*.xlsx` 可以匹配 `广州.xlsx`、`广州方言.xlsx` 等
+
+#### Q: 粵拼轉換失敗
+
+**解決**：
+1. 確認配置中"拼音"列填寫為 `粵拼`
+2. "字聲韻調註列名"用括號標記粵拼列：`A,(G),H`（G列是粵拼）
+
+#### Q: 缺少必需的依賴文件
+
+**錯誤信息**：`FileNotFoundError: data/dependency/jengzang補充.xlsx`
+
+**解決**：
+- 確保 `data/dependency/` 目錄包含以下必需文件：
+  - `jengzang補充.xlsx`（核心配置）
+  - `聲韻.xlsx`（中古音地位表）
+
+### 運行與處理
+
+#### Q: 程序運行很慢，如何加速？
+
+**建議**：
+1. 使用 SSD 硬盤存儲數據庫
+2. 關閉殺毒軟件的實時掃描
+3. 增加系統內存（推薦 8GB+）
+4. 分批處理：先處理部分方言點測試
+
+#### Q: 數據庫文件太大，磁盤空間不足
+
+**解決**：
+```bash
+# 查看數據庫大小
+ls -lh data/*.db
+
+# 移動大文件到其他磁盤
+mv data/dialects_admin.db /path/to/large/disk/
+
+# 更新代碼中的路徑（修改 common/config.py）
+```
+
+#### Q: update 模式沒有效果
+
+**解決**：
+1. 確認 `data/raw/pull_yindian/` 目錄存在且包含 TSV 文件
+2. 檢查文件名是否與配置中的"簡稱"匹配
+3. 運行後需要同步：`python build.py -u admin -t update sync`
+
+#### Q: 如何查看處理日誌？
+
+**解決**：
+```bash
+# 查看日誌文件
+cat logs/write.txt          # 寫入日誌
+cat logs/write_error.txt    # 錯誤日誌
+cat logs/缺資料.txt         # 缺失數據警告
+```
+
+### 數據驗證
+
+#### Q: 如何驗證數據是否正確寫入？
+
+**解決**：
+```bash
+# 使用 SQLite 命令行
+sqlite3 data/dialects_admin.db
+
+# 查詢示例
+SELECT COUNT(*) FROM dialects;                    -- 總記錄數
+SELECT DISTINCT 簡稱 FROM dialects;               -- 所有方言點
+SELECT * FROM dialects WHERE 漢字='時' LIMIT 10;  -- 查詢特定字
+```
+
+#### Q: COMPARE 和 CLEANUP 的使用時機
 
 **建議**：
 - **COMPARE**：在執行 `update` 前，先查看有哪些文件變化
+  ```bash
+  python utils.py -t COMPARE
+  cat data/yindian_comparison_report.txt
+  ```
 - **CLEANUP**：定期清理（例如每季度一次），避免重複數據堆積
-- 兩者都會生成報告文件，可以保存作為數據管理記錄
+  ```bash
+  python utils.py -t CLEANUP
+  cat data/cleanup_report.txt
+  ```
+
+### 進階問題
+
+#### Q: 如何添加自定義的字表格式？
+
+**解決**：修改 `source/format_convert.py`，添加新的處理函數：
+```python
+def process_自定義格式(file_path, ...):
+    # 你的處理邏輯
+    return df  # 返回標準格式 DataFrame
+```
+
+#### Q: 如何導出數據為 Excel？
+
+**解決**：
+```bash
+# 使用導出工具
+python -c "from scripts.export.fanwan_sql_to_xlsx import export; export()"
+```
+
+#### Q: 遇到其他問題怎麼辦？
+
+**建議**：
+1. 查看 [CLAUDE.md](CLAUDE.md) 獲取更詳細的技術文檔
+2. 在 [GitHub Issues](https://github.com/jengzang/chars/issues) 提問
+3. 提供錯誤信息和日誌文件以便診斷
 
 ---
 
