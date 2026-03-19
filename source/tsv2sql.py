@@ -835,12 +835,56 @@ def merge_text_into_meaning(df, meaning_column="釋義", note_column=None, note_
     return result.drop(columns=[note_column])
 
 
+def append_simplified_character_rows(df, char_column, unique_columns=None):
+    """
+    ????????????????? t2s ????????
+    """
+    if not char_column or char_column not in df.columns:
+        return df, 0
+
+    result = df.copy()
+    result[char_column] = result[char_column].fillna("").astype(str).str.strip()
+    key_columns = list(unique_columns or result.columns)
+    existing_keys = {
+        tuple(row)
+        for row in result[key_columns].itertuples(index=False, name=None)
+    }
+    new_rows = []
+
+    for row in result.to_dict("records"):
+        char = str(row.get(char_column, "")).strip()
+        if len(char) != 1:
+            continue
+
+        simplified = traditional2simplified(char).strip()
+        if len(simplified) != 1 or simplified == char:
+            continue
+
+        new_row = row.copy()
+        new_row[char_column] = simplified
+        row_key = tuple(new_row[col] for col in key_columns)
+        if row_key in existing_keys:
+            continue
+
+        existing_keys.add(row_key)
+        new_rows.append(new_row)
+
+    if not new_rows:
+        return result, 0
+
+    new_df = pd.DataFrame(new_rows, columns=result.columns)
+    return pd.concat([result, new_df], ignore_index=True), len(new_rows)
+
+
 def write_character_source_table(conn, table_name, df, single_index_columns=None, pair_index_columns=None, char_column=None, hierarchy_index=None):
     """
     將整理好的 DataFrame 寫入 characters.db 的指定表。
     """
     # 添加多地位标记列（如果有 char_column）
     if char_column and char_column in df.columns:
+        df, added_rows = append_simplified_character_rows(df, char_column)
+        if added_rows:
+            print(f"   [????] ?? {added_rows} ?")
         dup_counts = df[char_column].value_counts()
         df = df.copy()
         df["多地位標記"] = df[char_column].map(lambda x: "1" if dup_counts.get(x, 0) > 1 else "")
@@ -1207,6 +1251,13 @@ def process_phonology_excel(
     invalid_rows = df[df[check_cols].isnull().any(axis=1)]
     df_valid = df.drop(index=invalid_rows.index)
     df_unique = df_valid.drop_duplicates(subset=write_columns).copy()
+    df_unique, added_rows = append_simplified_character_rows(
+        df_unique,
+        char_column,
+        unique_columns=write_columns,
+    )
+    if added_rows:
+        print(f"   [????] ?? {added_rows} ?")
 
     dup_counts = df_unique[char_column].value_counts()
     df_unique[duplicate_flag_column] = df_unique[char_column].map(
