@@ -100,6 +100,27 @@ def filter_fenyun_cuoyao_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df[(hanzi != "?") & (hanzi.str.len() == 1)]
 
 
+def filter_old_chinese_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    上古漢語只保留有原始音標的行。
+    """
+    yinbiao = df["原始音標"].astype(str).str.strip()
+    return df[yinbiao != ""]
+
+
+def split_fenyun_yunbu_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    將分韻撮要的韻部拆成韻序與純韻部名（如「第一先蘚線屑」→ 韻序=1, 韻部=「先蘚線屑」）。
+    """
+    result = df.copy()
+    yunbu_series = result["韻部"].fillna("").astype(str).str.strip()
+    match_series = yunbu_series.str.extract(r"^第([一二三四五六七八九十]+)(.+)$")
+
+    result["韻序"] = match_series[0].map(lambda value: chinese_numeral_to_int(value) if pd.notna(value) else "")
+    result["韻部"] = match_series[1].fillna(yunbu_series)
+    return result
+
+
 def split_menggu_yunbu_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     將蒙古字韻的韻部拆成韻序與純韻部名。
@@ -204,6 +225,7 @@ ADDITIONAL_CHARACTER_TABLE_SPECS = (
             "西周字頻（歸一化）", "釋義", "注釋",
         ),
         drop_unnamed=True,
+        row_filter=filter_old_chinese_rows,
         rename_columns={"字": "漢字"},
         final_columns=(
             "漢字", "原始音標", "聲調", "聲母", "韻母", "韻部", "聲母組", "r介音", "非三等", "諧聲域", "音",
@@ -236,10 +258,11 @@ ADDITIONAL_CHARACTER_TABLE_SPECS = (
         sheet_name="YFanwan",
         columns=("漢字", "聲母jp", "韻腹jp", "韻尾jp", "調類jp", "小韻", "釋義", "聲母", "韻母", "韻部", "聲調"),
         row_filter=filter_fenyun_cuoyao_rows,
-        final_columns=("漢字", "聲母jp", "韻腹jp", "韻尾jp", "調類jp", "小韻", "釋義", "聲母", "韻母", "韻部", "聲調"),
+        transform_func=split_fenyun_yunbu_columns,
+        final_columns=("韻序", "漢字", "聲母jp", "韻腹jp", "韻尾jp", "調類jp", "小韻", "釋義", "聲母", "韻母", "韻部", "聲調"),
         char_column="漢字",
         single_index_columns=("漢字",),
-        pair_index_columns=("小韻", "聲母", "韻母", "韻部", "聲調"),
-        hierarchy_index=("聲母", "韻母", "韻部", "聲調"),  # 层级复合索引
+        pair_index_columns=("韻序", "小韻", "聲母", "韻母", "韻部", "聲調"),
+        hierarchy_index=("韻序", "韻部", "聲母", "聲調"),  # 层级复合索引
     ),
 )

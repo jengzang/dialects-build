@@ -1,3 +1,4 @@
+import csv
 import math
 import os
 import re
@@ -65,7 +66,15 @@ def extract_all_from_files(file_path: str, get_tone: bool = True, preserve_empty
     file_extension = os.path.splitext(file_path)[1].lower()
     # print(file_extension)
     if file_extension == ".tsv":
-        df = pd.read_csv(file_path, sep="\t", dtype=str)
+        df = pd.read_csv(
+            file_path,
+            sep="\t",
+            dtype=str,
+            keep_default_na=False,
+            na_filter=False,
+            engine="python",
+            quoting=csv.QUOTE_NONE,
+        )
     elif file_extension in [".xls", ".xlsx"]:
         df = pd.read_excel(file_path, dtype=str)
     else:

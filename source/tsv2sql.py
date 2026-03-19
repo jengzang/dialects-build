@@ -57,7 +57,7 @@ def build_dialect_database(mode='admin'):
         "[7]陰入": "T7陰入",
         "[8]陽入": "T8陽入",
         "[9]變調": "T9其他調",
-        "[10]輕聲": "T10輕聲"
+        "[0]輕聲": "T10輕聲"
     }
 
     geo_map = {
@@ -837,7 +837,7 @@ def merge_text_into_meaning(df, meaning_column="釋義", note_column=None, note_
 
 def append_simplified_character_rows(df, char_column, unique_columns=None):
     """
-    ????????????????? t2s ????????
+    在不改動表結構的前提下，為單字補充 t2s 後的簡體別名行。
     """
     if not char_column or char_column not in df.columns:
         return df, 0
@@ -884,7 +884,7 @@ def write_character_source_table(conn, table_name, df, single_index_columns=None
     if char_column and char_column in df.columns:
         df, added_rows = append_simplified_character_rows(df, char_column)
         if added_rows:
-            print(f"   [????] ?? {added_rows} ?")
+            print(f"   [繁簡補行] 追加 {added_rows} 行")
         dup_counts = df[char_column].value_counts()
         df = df.copy()
         df["多地位標記"] = df[char_column].map(lambda x: "1" if dup_counts.get(x, 0) > 1 else "")
@@ -1257,7 +1257,7 @@ def process_phonology_excel(
         unique_columns=write_columns,
     )
     if added_rows:
-        print(f"   [????] ?? {added_rows} ?")
+        print(f"   [繁簡補行] 追加 {added_rows} 行")
 
     dup_counts = df_unique[char_column].value_counts()
     df_unique[duplicate_flag_column] = df_unique[char_column].map(
