@@ -1,17 +1,117 @@
 import argparse
-
-from source.raw2tsv import convert_all_to_tsv
-from source.tsv2sql import write_to_sql, sync_dialects_flags, build_dialect_database, process_phonology_excel
+import shutil
+import subprocess
+from pathlib import Path
 
 """
 用来前置处理字表，转成tsv，然后写入数据库。
 """
 
 
-import argparse
+MCP_REPO_URL = "https://github.com/osfans/MCPDict.git"
+MCP_TARGET_FOLDER = "tools/tables/output"
+PULL_YINDIAN_DIR = Path("data/raw/pull_yindian")
+MCP_CACHE_DIR = Path("data/raw/.git_cache")
+MCP_VERSION_FILE = PULL_YINDIAN_DIR / ".last_commit"
+
+
+def run_git_command(args, cwd=None, capture_output=False):
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=capture_output,
+    )
+
+
+def ensure_mcp_cache():
+    if not MCP_CACHE_DIR.exists():
+        print("🚀 Initializing git cache...")
+        run_git_command(["clone", "--filter=blob:none", "--no-checkout", MCP_REPO_URL, str(MCP_CACHE_DIR)])
+
+    run_git_command(["config", "core.quotePath", "false"], cwd=MCP_CACHE_DIR)
+    index_lock = MCP_CACHE_DIR / ".git/index.lock"
+    if index_lock.exists():
+        index_lock.unlink()
+
+
+def list_full_export_files(latest_commit):
+    result = run_git_command(
+        ["ls-tree", "-r", "--name-only", latest_commit, "--", f"{MCP_TARGET_FOLDER}/*.tsv"],
+        cwd=MCP_CACHE_DIR,
+        capture_output=True,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def list_diff_export_files(last_commit, latest_commit):
+    result = run_git_command(
+        ["diff", "--name-only", last_commit, latest_commit, "--", f"{MCP_TARGET_FOLDER}/*.tsv"],
+        cwd=MCP_CACHE_DIR,
+        capture_output=True,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def clear_pull_yindian_dir():
+    PULL_YINDIAN_DIR.mkdir(parents=True, exist_ok=True)
+    for child in PULL_YINDIAN_DIR.iterdir():
+        if child.name == ".last_commit":
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def export_mcp_tables(mode):
+    ensure_mcp_cache()
+
+    print("📡 Fetching MCPDict latest commit...")
+    run_git_command(["fetch", "origin", "master", "--quiet"], cwd=MCP_CACHE_DIR)
+    latest_commit = run_git_command(["rev-parse", "origin/master"], cwd=MCP_CACHE_DIR, capture_output=True).stdout.strip()
+
+    last_commit = None
+    if MCP_VERSION_FILE.exists():
+        last_commit = MCP_VERSION_FILE.read_text(encoding="utf-8").strip() or None
+
+    if mode == "full" or not last_commit:
+        if mode == "diff" and not last_commit:
+            print("⚠️ 未找到 .last_commit，diff 模式自动退回 full 导出")
+        files_to_export = list_full_export_files(latest_commit)
+        print("⚠️ Mode: Full Export")
+    else:
+        print(f"🔍 Diffing: {last_commit} -> {latest_commit}")
+        files_to_export = list_diff_export_files(last_commit, latest_commit)
+
+    if not files_to_export:
+        print("✅ All up to date.")
+        return
+
+    clear_pull_yindian_dir()
+    print(f"🚚 Extracting {len(files_to_export)} files...")
+    for relative_path in files_to_export:
+        file_name = Path(relative_path).name
+        destination = PULL_YINDIAN_DIR / file_name
+        content = run_git_command(["show", f"{latest_commit}:{relative_path}"], cwd=MCP_CACHE_DIR, capture_output=True).stdout
+        destination.write_text(content, encoding="utf-8")
+        print(f"  [+] {file_name}")
+
+    MCP_VERSION_FILE.write_text(f"{latest_commit}\n", encoding="ascii")
+    print(f"✨ Done! Version updated to {latest_commit[:7]}")
+
 
 # === 主執行函式 ===
 def main(args):
+    if args.mcp_mode:
+        export_mcp_tables(args.mcp_mode)
+
+    if args.type:
+        from source.raw2tsv import convert_all_to_tsv
+        from source.tsv2sql import write_to_sql, sync_dialects_flags, build_dialect_database, process_phonology_excel
+
     # 1️⃣ 字表轉換
     if 'convert' in args.type:
         convert_all_to_tsv()
@@ -73,6 +173,18 @@ if __name__ == "__main__":
         choices=['admin', 'user'],
         default='admin',
         help="👤 指定要寫入的資料庫類型：admin（預設）或 user"
+    )
+
+    parser.add_argument(
+        '-m', '--mcp', '--yindian',
+        dest='mcp_mode',
+        choices=['full', 'diff'],
+        default=None,
+        help=(
+            "📥 拉取 MCPDict 的音典 TSV 到 data/raw/pull_yindian：\n"
+            "  full         → 全量导出\n"
+            "  diff         → 增量导出（基于 .last_commit）\n"
+        )
     )
 
     # 要執行的處理功能（可多選）
