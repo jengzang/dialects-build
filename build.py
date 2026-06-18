@@ -109,6 +109,8 @@ def main(args):
 
     if args.mcp_mode:
         export_mcp_tables(args.mcp_mode)
+        if not args.type:
+            return
 
     if 'convert' in args.type:
         from source.raw2tsv import convert_all_to_tsv
