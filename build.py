@@ -184,9 +184,10 @@ if __name__ == "__main__":
         choices=['full', 'diff'],
         default=None,
         help=(
-            "📥 拉取 MCPDict 的音典 TSV 到 data/raw/pull_yindian：\n"
+            "📥 拉取 MCPDict 的音典 TSV 到 data/raw/pull_yindian（单独使用时只拉取，不写库）：\n"
             "  full         → 全量导出\n"
             "  diff         → 增量导出（基于 .last_commit）\n"
+            "  若同时传入 -t，则拉取完成后继续执行对应处理流程\n"
         )
     )
 
