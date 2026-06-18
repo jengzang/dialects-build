@@ -24,6 +24,38 @@ from source.get_new import extract_all_from_files
 from source.match_fromdb import get_tsvs
 
 
+WEN_BAI_LITERARY_MARK = '2'
+WEN_BAI_COLLOQUIAL_MARK = '3'
+WEN_BAI_MARKS = {
+    '=': WEN_BAI_LITERARY_MARK,
+    '-': WEN_BAI_COLLOQUIAL_MARK,
+}
+
+
+def split_wenbai_marker(value):
+    text = '' if value is None else str(value).strip()
+    if not text:
+        return '', ''
+
+    marker = WEN_BAI_MARKS.get(text[-1])
+    if marker:
+        return text[:-1].strip(), marker
+    return text, ''
+
+
+def apply_polyphonic_labels(merged_df, group_columns):
+    if merged_df.empty:
+        return merged_df
+
+    result = merged_df.copy()
+    syllable_counts = result.groupby(group_columns)['音節'].transform('nunique')
+    is_polyphonic = syllable_counts > 1
+    has_wenbai_mark = result['多音字'].isin([WEN_BAI_LITERARY_MARK, WEN_BAI_COLLOQUIAL_MARK])
+    fill_mask = is_polyphonic & ~has_wenbai_mark & (result['多音字'].fillna('').astype(str).str.strip() == '')
+    result.loc[fill_mask, '多音字'] = '1'
+    return result
+
+
 def build_dialect_database(mode='admin'):
     """
     構建方言查詢數據庫
@@ -408,7 +440,9 @@ def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_pat
 
             df = df.fillna("")
             df["漢字"] = df["汉字"].astype(str).str.strip()
-            df["音節"] = df["音标"].astype(str).str.strip()
+            split_results = df["音标"].apply(split_wenbai_marker)
+            df["音節"] = split_results.str[0]
+            df["多音字"] = split_results.str[1]
             df["聲母"] = df["声母"].astype(str).str.strip()
             df["韻母"] = df["韵母"].astype(str).str.strip()
             df["聲調"] = df["声调"].astype(str).str.strip()
@@ -432,7 +466,7 @@ def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_pat
 
             # 4. 🚀 使用 itertuples() 替代 iterrows()（快10-100倍）
             batch_data = [
-                (tsv_name, row.漢字, row.音節, row.聲母, row.韻母, row.聲調, row.註釋, "")
+                (tsv_name, row.漢字, row.音節, row.聲母, row.韻母, row.聲調, row.註釋, row.多音字)
                 for row in df_valid.itertuples(index=False)
             ]
             insert_count = len(batch_data)
@@ -573,8 +607,8 @@ def process_polyphonic_annotations(db_path: str):
                                df['韻母'].astype(str) + '|' +
                                df['聲調'].astype(str))
 
-        # 🚀 為每個 (簡稱, 漢字, 音節) 組分配唯一ID
-        df['_group_id'] = df.groupby(['簡稱', '漢字', '音節']).ngroup()
+        # 🚀 為每個 (簡稱, 漢字, 音節, 多音字) 組分配唯一ID，避免文白讀提前合併
+        df['_group_id'] = df.groupby(['簡稱', '漢字', '音節', '多音字']).ngroup()
 
         # 🚀 計算每組的唯一音韻特徵數
         phonetic_counts = df.groupby('_group_id')['_phonetic_key'].nunique()
@@ -618,10 +652,8 @@ def process_polyphonic_annotations(db_path: str):
         # 🚀 合併兩部分
         merged_df = pd.concat([consistent_merged, inconsistent_df], ignore_index=True)
 
-        # 標記多音字（音節不同）- 按簡稱和漢字分組
-        merged_df['多音字'] = merged_df.groupby(['簡稱', '漢字'])['音節'].transform(
-            lambda x: '1' if x.nunique() > 1 else ''
-        )
+        # 標記多音字（音節不同）- 保留文白讀 2/3，只給其他多音讀補 1
+        merged_df = apply_polyphonic_labels(merged_df, ['簡稱', '漢字'])
 
         # 只保留需要的列，去除臨時列
         final_columns = ['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字']
@@ -981,8 +1013,8 @@ def process_polyphonic_annotations_selective(db_path: str, 簡稱_list: list):
                                df['韻母'].astype(str) + '|' +
                                df['聲調'].astype(str))
 
-        # Group by (漢字, 音節)
-        df['_group_id'] = df.groupby(['漢字', '音節']).ngroup()
+        # Group by (漢字, 音節, 多音字)，避免文白讀提前合併
+        df['_group_id'] = df.groupby(['漢字', '音節', '多音字']).ngroup()
 
         # Count unique phonetic features per group
         phonetic_counts = df.groupby('_group_id')['_phonetic_key'].nunique()
@@ -1024,10 +1056,8 @@ def process_polyphonic_annotations_selective(db_path: str, 簡稱_list: list):
             cursor.execute("DELETE FROM dialects WHERE 簡稱 = ?", (簡稱,))
             merged_df = df[['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字']].copy()
 
-        # Mark polyphonic characters
-        merged_df['多音字'] = merged_df.groupby('漢字')['音節'].transform(
-            lambda x: '1' if x.nunique() > 1 else ''
-        )
+        # Mark polyphonic characters while preserving wen/bai labels
+        merged_df = apply_polyphonic_labels(merged_df, ['漢字'])
 
         # 只保留需要的列，去除臨時列
         final_columns = ['簡稱', '漢字', '音節', '聲母', '韻母', '聲調', '註釋', '多音字']
