@@ -105,12 +105,13 @@ def export_mcp_tables(mode):
 
 # === 主執行函式 ===
 def main(args):
+    from source.tsv2sql import write_to_sql, sync_dialects_flags, build_dialect_database, process_phonology_excel
+
     if args.mcp_mode:
         export_mcp_tables(args.mcp_mode)
 
-    if args.type:
+    if 'convert' in args.type:
         from source.raw2tsv import convert_all_to_tsv
-        from source.tsv2sql import write_to_sql, sync_dialects_flags, build_dialect_database, process_phonology_excel
 
     # 1️⃣ 字表轉換
     if 'convert' in args.type:
