@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from common.constants import exclude_files
+from common.constants import (
+    exclude_files,
+    DIALECT_BASE_REQUIRED_COLUMNS,
+    DIALECT_METADATA_RENAME_MAP,
+    DIALECT_METADATA_REQUIRED_COLUMNS,
+)
 from source.change_coordinates import GPSUtil
 from common.config import (HAN_PATH, APPEND_PATH, QUERY_DB_PATH, DIALECTS_DB_PATH, CHARACTERS_DB_PATH, \
                            MISSING_DATA_LOG, WRITE_INFO_LOG, YINDIAN_DATA_DIR, UPDATE_DATA_DIR, QUERY_DB_ADMIN_PATH,
@@ -78,37 +83,8 @@ def build_dialect_database(mode='admin'):
     han_file = Path(HAN_PATH)
     other_file = Path(APPEND_PATH)
 
-    # --- A. 定義欄位映射 ---
-    tone_map = {
-        "[1]陰平": "T1陰平",
-        "[2]陽平": "T2陽平",
-        "[3]陰上": "T3陰上",
-        "[4]陽上": "T4陽上",
-        "[5]陰去": "T5陰去",
-        "[6]陽去": "T6陽去",
-        "[7]陰入": "T7陰入",
-        "[8]陽入": "T8陽入",
-        "[9]變調": "T9其他調",
-        "[0]輕聲": "T10輕聲"
-    }
-
-    geo_map = {
-        "省/自治區/直轄市": "省",
-        "地區/市/州": "市",
-        "縣/市/區": "縣",
-        "鄉/鎮/街道": "鎮",
-        "村/社區/居民點": "行政村",
-        "自然村": "自然村"
-    }
-
-    rename_map = {**tone_map, **geo_map}
-
-    # --- B. 定義必須存在的基礎欄位 (除了 Mapping 以外的) ---
-    # 注意：'存儲標記' 是代碼生成的，'isUser' 是可選的，所以不放在這裡
-    base_required_columns = [
-        "語言", "簡稱", "音典排序", "地圖集二分區", "音典分區",
-        "字表來源（母本）", "方言島", "經緯度", "地圖級別"
-    ]
+    rename_map = DIALECT_METADATA_RENAME_MAP
+    base_required_columns = DIALECT_BASE_REQUIRED_COLUMNS
 
     # --- C. 定義校驗函數 ---
     def validate_required_columns(df_columns, filename):
@@ -116,21 +92,12 @@ def build_dialect_database(mode='admin'):
         嚴格檢查文件是否包含所有必要欄位（Mapping + Base）。
         除了 'isUser' 和 '存儲標記' 以外，缺失任何欄位都會報錯。
         """
-        missing_cols = []
-
-        # 1. 檢查 Mapping 欄位 (聲調 + 地理)
-        for col in rename_map.keys():
-            if col not in df_columns:
-                missing_cols.append(col)
-
-        # 2. 檢查 基礎 欄位 (簡稱、經緯度等)
-        for col in base_required_columns:
-            if col not in df_columns:
-                missing_cols.append(col)
+        missing_cols = [col for col in DIALECT_METADATA_REQUIRED_COLUMNS if col not in df_columns]
 
         if missing_cols:
             print(f"\n❌ 嚴重錯誤：文件【{filename}】缺少必要欄位！程序終止。")
             print(f"   缺失的欄位 ({len(missing_cols)}個): {missing_cols}")
+            print(f"   實際讀到的欄位 ({len(df_columns)}個): {list(df_columns)}")
             print(f"   請檢查 Excel 表頭是否被修改，或是否有隱藏字符。")
             sys.exit(1)
 
