@@ -69,6 +69,20 @@ def split_cell_to_name_parts(cell):
     return parts
 
 
+def get_dialects_db_tone_names(cell):
+    text = '' if cell is None else str(cell).strip()
+    if not text:
+        return []
+
+    tone_names = []
+    tag_value_pairs = re.findall(r'\[([0-9]{1,2}[a-zA-Z]?)\](?:\d{1,3})?([^\[\],\d]*)', text)
+    for _tag, name in tag_value_pairs:
+        name = name.strip()
+        if name:
+            tone_names.append(name)
+    return tone_names
+
+
 def find_weird_name_hits_in_cell(cell):
     hits = []
     for name in split_cell_to_name_parts(cell):
@@ -80,12 +94,16 @@ def find_weird_name_hits_in_cell(cell):
 
 def fetch_raw_tone_rows(locations, db_path):
     rows = []
-    for location in locations:
+    total = len(locations)
+    for idx, location in enumerate(locations, start=1):
+        if idx == 1 or idx % 100 == 0 or idx == total:
+            print(f"[tone] 掃描進度 {idx}/{total}: {location}")
         try:
             result = search_tones(locations=[location], regions=None, get_raw=True, db_path=db_path)
             if result:
                 rows.extend(result)
-        except Exception:
+        except Exception as exc:
+            print(f"[tone] 跳過 {location}: {exc}")
             continue
     return rows
 
@@ -123,6 +141,7 @@ def analyze_tone_workbook(excel_path=HAN_PATH, db_path=QUERY_DB_USER_PATH, overr
                 workbook_value = str(workbook_row[column_label]).strip()
                 workbook_value = overrides.get(shortname, {}).get(workbook_value, workbook_value)
 
+            dialects_db_tone_names = get_dialects_db_tone_names(cell)
             for hit in hits:
                 weird_tone_names[hit['tone_name']].append({
                     '簡稱': shortname,
@@ -130,6 +149,7 @@ def analyze_tone_workbook(excel_path=HAN_PATH, db_path=QUERY_DB_USER_PATH, overr
                     'column': column_label,
                     'raw_total_data_value': str(cell).strip(),
                     'workbook_value': workbook_value,
+                    'dialects_db_tone_names': dialects_db_tone_names,
                     'weird_chars': hit['weird_chars'],
                 })
 
@@ -160,7 +180,8 @@ def format_tone_analysis_report(result, sample_limit=30):
             lines.append(f"- {tone_name!r} | count={len(items)} | weird_chars={weird_char_text}")
             for item in items[:sample_limit]:
                 lines.append(
-                    f"  簡稱={item['簡稱']} | 列={item['column']} | raw={item['raw_total_data_value']!r} | xlsx={item['workbook_value']!r}"
+                    # f"  簡稱={item['簡稱']} | 列={item['column']} | raw={item['raw_total_data_value']!r} | xlsx={item['workbook_value']!r} | dialects_db={item['dialects_db_tone_names']!r}"
+                    f"  簡稱={item['簡稱']} | 列={item['column']} | raw={item['raw_total_data_value']!r} | dialects_db={item['dialects_db_tone_names']!r}"
                 )
             if len(items) > sample_limit:
                 lines.append(f"  ... {len(items) - sample_limit} more")
