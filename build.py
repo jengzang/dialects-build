@@ -105,7 +105,13 @@ def export_mcp_tables(mode):
 
 # === 主執行函式 ===
 def main(args):
-    from source.tsv2sql import write_to_sql, sync_dialects_flags, build_dialect_database, process_phonology_excel
+    from source.tsv2sql import (
+        write_to_sql,
+        sync_dialects_flags,
+        build_dialect_database,
+        process_phonology_excel,
+        check_han_abbreviation_changes,
+    )
 
     if args.mcp_mode:
         export_mcp_tables(args.mcp_mode)
@@ -118,6 +124,10 @@ def main(args):
     # 1️⃣ 字表轉換
     if 'convert' in args.type:
         convert_all_to_tsv()
+
+    if 'check' in args.type:
+        check_status_filter = '不收' if 'deny' in args.type else None
+        check_han_abbreviation_changes(status_filter=check_status_filter)
 
     # 2️⃣ 寫入資料庫（admin 或 user）
     # 當 args.type 為空，或包含 needchars/append/update 時執行
@@ -195,11 +205,13 @@ if __name__ == "__main__":
     parser.add_argument(
         '-t', '--type',
         nargs='*',
-        choices=['convert', 'chars', 'query', 'sync', 'needchars', 'append', 'update'],
+        choices=['convert', 'chars', 'query', 'sync', 'needchars', 'append', 'update', 'check', 'deny'],
         default=[],
         help=(
             "⚙️ 要執行的處理功能（可多選）：\n"
             "  convert      → 字表轉TSV\n"
+            "  check        → 對比 old/ 與當前音典檔案，輸出簡稱新增/改名/刪除與同坐標衝突\n"
+            "  deny         → 僅配合 check 使用，只輸出 是否有人在做=不收 的記錄\n"
             "  needchars     → 需要重寫中古地位數據庫characters.db\n"
             "  query        → 寫方言查詢數據庫query.db\n"
             "  sync         → 存儲標記\n"
