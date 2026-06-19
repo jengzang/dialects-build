@@ -30,11 +30,14 @@ UPDATE_DATA_DIR = os.path.join(BASE_DIR, "data", "raw", "pull_yindian")
 # MCPDict 抓取/導出路徑依賴
 MCP_REPO_URL = "https://github.com/osfans/MCPDict.git"
 MCP_TARGET_FOLDER = "tools/tables/output"
+MCP_SHEET_PATH = "tools/漢字音典字表檔案（長期更新）.xlsx"
 PULL_YINDIAN_DIR = Path(BASE_DIR) / "data" / "raw" / "pull_yindian"
 ALL_YINDIAN_DIR = Path(BASE_DIR) / "data" / "raw" / "all_yindian"
+ALL_SHEET_DIR = Path(BASE_DIR) / "data" / "raw" / "all_sheet"
 MCP_CACHE_DIR = Path(BASE_DIR) / "data" / "raw" / ".git_cache"
 MCP_VERSION_FILE = PULL_YINDIAN_DIR / ".last_commit"
 ALL_YINDIAN_MAP_FILE = ALL_YINDIAN_DIR / "_history_map.json"
+MCP_SHEET_HISTORY_MAP_FILE = ALL_SHEET_DIR / "_history_map.json"
 
 # 通用路徑依賴
 ZHENGZI_PATH = os.path.join(BASE_DIR, "data", "dependency", "正字.tsv")

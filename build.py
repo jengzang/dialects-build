@@ -1,26 +1,11 @@
 import argparse
-from datetime import datetime, timezone
-import json
-import shutil
-import subprocess
-import io
-import tarfile
-from pathlib import Path
 
 """
 用来前置处理字表，转成tsv，然后写入数据库。
 """
 
 
-from common.config import (
-    MCP_REPO_URL,
-    MCP_TARGET_FOLDER,
-    PULL_YINDIAN_DIR,
-    ALL_YINDIAN_DIR,
-    MCP_CACHE_DIR,
-    MCP_VERSION_FILE,
-    ALL_YINDIAN_MAP_FILE,
-)
+from source.mcp_export import export_mcp_assets
 
 
 def run_git_command(args, cwd=None, capture_output=False, text=True, encoding="utf-8"):
@@ -270,6 +255,11 @@ def export_mcp_tables(mode):
 
 # === 主執行函式 ===
 def main(args):
+    if args.mcp_mode:
+        export_mcp_assets(args.mcp_mode)
+        if not args.type:
+            return
+
     from source.tsv2sql import (
         write_to_sql,
         sync_dialects_flags,
@@ -277,14 +267,7 @@ def main(args):
         process_phonology_excel,
         check_han_abbreviation_changes,
     )
-
-    if args.mcp_mode:
-        if args.mcp_mode == 'all':
-            export_all_history_tables()
-        else:
-            export_mcp_tables(args.mcp_mode)
-        if not args.type:
-            return
+    from source.tone_check import run_tone_check
 
     if 'convert' in args.type:
         from source.raw2tsv import convert_all_to_tsv
@@ -296,6 +279,9 @@ def main(args):
     if 'check' in args.type:
         check_status_filter = '不收' if 'deny' in args.type else None
         check_han_abbreviation_changes(status_filter=check_status_filter)
+
+    if 'tone' in args.type:
+        run_tone_check()
 
     # 2️⃣ 寫入資料庫（admin 或 user）
     # 當 args.type 為空，或包含 needchars/append/update 時執行
@@ -359,13 +345,14 @@ if __name__ == "__main__":
     parser.add_argument(
         '-m', '--mcp', '--yindian',
         dest='mcp_mode',
-        choices=['full', 'diff', 'all'],
+        choices=['full', 'diff', 'all', 'all_sheet'],
         default=None,
         help=(
-            "📥 拉取 MCPDict 的音典 TSV 到 data/raw/pull_yindian（单独使用时只拉取，不写库）：\n"
-            "  full         → 全量导出\n"
+            "📥 拉取 MCPDict 的音典資料（单独使用时只拉取，不写库）：\n"
+            "  full         → 全量导出 tools/tables/output/*.tsv 到 data/raw/pull_yindian/\n"
             "  diff         → 增量导出（基于 .last_commit）\n"
-            "  all          → 遍歷歷史提交，按文件名保留最新版本，輸出到 data/raw/all_yindian/\n"
+            "  all          → 遍歷歷史提交，按文件名保留最新 TSV，輸出到 data/raw/all_yindian/\n"
+            "  all_sheet    → 導出歷史提交中的 漢字音典字表檔案（長期更新）.xlsx，按提交時間命名到 data/raw/all_sheet/\n"
             "  若同时传入 -t，则拉取完成后继续执行对应处理流程\n"
         )
     )
@@ -374,13 +361,14 @@ if __name__ == "__main__":
     parser.add_argument(
         '-t', '--type',
         nargs='*',
-        choices=['convert', 'chars', 'query', 'sync', 'needchars', 'append', 'update', 'check', 'deny'],
+        choices=['convert', 'chars', 'query', 'sync', 'needchars', 'append', 'update', 'check', 'deny', 'tone'],
         default=[],
         help=(
             "⚙️ 要執行的處理功能（可多選）：\n"
             "  convert      → 字表轉TSV\n"
             "  check        → 對比 old/ 與當前音典檔案，輸出簡稱新增/改名/刪除與同坐標衝突\n"
             "  deny         → 僅配合 check 使用，只輸出 是否有人在做=不收 的記錄\n"
+            "  tone         → 復用現有聲調拆解邏輯檢查 xlsx 聲調欄，列出奇怪調類與拆解失敗值\n"
             "  needchars     → 需要重寫中古地位數據庫characters.db\n"
             "  query        → 寫方言查詢數據庫query.db\n"
             "  sync         → 存儲標記\n"
