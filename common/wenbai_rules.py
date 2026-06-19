@@ -15,6 +15,10 @@ WEN_BAI_NOTE_PATTERNS = [
     (re.compile(r'^\s*(?:讀書音|读书音)(?=$|[：:，,;；\s])'), WEN_BAI_LITERARY_MARK),
 ]
 
+WEN_BAI_NOTE_INLINE_PATTERN = re.compile(r'\s*(?:\[文\]|\[白\]|\(文\)|\(白\)|（文）|（白）)\s*')
+WEN_BAI_NOTE_PREFIX_PATTERN = re.compile(r'^\s*(?:文讀|文读|白讀|白读|讀書音|读书音|文(?=$|[：:，,;；\s])|白(?=$|[：:，,;；\s]))\s*(?:[：:，,;；]\s*)?')
+WEN_BAI_NOTE_EDGE_PUNCT_PATTERN = re.compile(r'^[\s：:，,;；]+|[\s：:，,;；]+$')
+
 
 def split_wenbai_marker(value):
     text = '' if value is None else str(value).strip()
@@ -36,6 +40,17 @@ def detect_wenbai_from_note(note):
         if pattern.search(text):
             return marker
     return ''
+
+
+def clean_wenbai_note(note):
+    text = '' if note is None else str(note).strip()
+    if not text:
+        return ''
+
+    text = WEN_BAI_NOTE_PREFIX_PATTERN.sub('', text)
+    text = WEN_BAI_NOTE_INLINE_PATTERN.sub('', text)
+    text = WEN_BAI_NOTE_EDGE_PUNCT_PATTERN.sub('', text)
+    return text.strip()
 
 
 def merge_wenbai_markers(primary_marker, note_marker):

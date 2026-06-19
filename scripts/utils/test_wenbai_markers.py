@@ -10,6 +10,7 @@ import pandas as pd
 from common.wenbai_rules import (
     WEN_BAI_COLLOQUIAL_MARK,
     WEN_BAI_LITERARY_MARK,
+    clean_wenbai_note,
     detect_wenbai_from_note,
     merge_wenbai_markers,
     split_wenbai_marker,
@@ -67,6 +68,19 @@ def test_merge_wenbai_markers_priority():
     assert_equal(merge_wenbai_markers('1', '2'), '1', 'existing polyphonic 1 is preserved')
 
 
+def test_clean_wenbai_note():
+    assert_equal(clean_wenbai_note('文讀'), '', 'pure literary tag removed')
+    assert_equal(clean_wenbai_note('白讀'), '', 'pure colloquial tag removed')
+    assert_equal(clean_wenbai_note('文读,~产党'), '~产党', 'prefix tag removed but gloss kept')
+    assert_equal(clean_wenbai_note('白读,~抢'), '~抢', 'prefix tag removed but gloss kept')
+    assert_equal(clean_wenbai_note('是[白]'), '是', 'inline tag removed but word kept')
+    assert_equal(clean_wenbai_note('~通,~钱[文]'), '~通,~钱', 'inline tag removed from example suffix')
+    assert_equal(clean_wenbai_note('命令（文）'), '命令', 'full-width inline tag removed')
+    assert_equal(clean_wenbai_note('~相帮助(白)'), '~相帮助', 'ascii inline tag removed')
+    assert_equal(clean_wenbai_note('白面~:獾猪'), '白面~:獾猪', 'non-tag content preserved')
+    assert_equal(clean_wenbai_note('原文作“宽”,有误'), '原文作“宽”,有误', 'ordinary text preserved')
+
+
 def test_apply_polyphonic_labels_priority():
     df = pd.DataFrame([
         {'簡稱': 'A', '漢字': '交', '音節': 'kau1', '多音字': '2'},
@@ -96,5 +110,6 @@ if __name__ == '__main__':
     test_split_wenbai_marker()
     test_detect_wenbai_from_note()
     test_merge_wenbai_markers_priority()
+    test_clean_wenbai_note()
     test_apply_polyphonic_labels_priority()
     print('wenbai marker tests passed')

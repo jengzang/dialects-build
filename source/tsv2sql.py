@@ -17,6 +17,7 @@ from common.constants import (
 from common.wenbai_rules import (
     WEN_BAI_COLLOQUIAL_MARK,
     WEN_BAI_LITERARY_MARK,
+    clean_wenbai_note,
     detect_wenbai_from_note,
     merge_wenbai_markers,
     split_wenbai_marker,
@@ -714,6 +715,7 @@ def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_pat
                 merge_wenbai_markers(primary_marker, note_marker)
                 for primary_marker, note_marker in zip(df["多音字"], note_wenbai_marks)
             ]
+            df["註釋"] = df["註釋"].apply(clean_wenbai_note)
 
             # 🚀 优化：使用向量化操作过滤数据，避免 iterrows()
             # 1. 过滤：至少有一个音韵特征不为空
