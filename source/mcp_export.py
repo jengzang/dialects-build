@@ -1,9 +1,11 @@
 import argparse
 import io
 import json
+import re
 import shutil
 import subprocess
 import tarfile
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Optional
@@ -14,6 +16,7 @@ from common.config import (
     ALL_YINDIAN_MAP_FILE,
     MCP_CACHE_DIR,
     MCP_REPO_URL,
+    MCP_SOURCEFORGE_CODE_URL,
     MCP_SHEET_HISTORY_MAP_FILE,
     MCP_SHEET_PATH,
     MCP_TARGET_FOLDER,
@@ -248,42 +251,50 @@ def export_mcp_tables(mode):
 
 
 def build_sheet_history_entries(sheet_path=MCP_SHEET_PATH):
-    ensure_mcp_cache()
-    print('📡 Fetching MCPDict latest commit for sheet history scan...')
-    run_git_command(['fetch', 'origin', 'master', '--quiet'], cwd=MCP_CACHE_DIR)
-    result = run_git_command(
-        ['log', '--follow', '--format=%H\t%ct', '--name-only', '--', sheet_path],
-        cwd=MCP_CACHE_DIR,
-        capture_output=True,
+    encoded_path = urllib.parse.quote('/' + sheet_path)
+    url = f'{MCP_SOURCEFORGE_CODE_URL}/master/log/?path={encoded_path}'
+    html = run_curl_text(url)
+    row_pattern = re.compile(
+        r'revision="(?P<commit>[0-9a-f]{40})".*?'
+        r'<td style="vertical-align: text-top">\s*(?P<date>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*</td>.*?'
+        r'href="/p/mcpdict/code/ci/(?P=commit)/tree/' + re.escape(sheet_path) + r'\?format=raw"',
+        re.S,
     )
-    entries = []
-    current = None
-    for raw_line in result.stdout.splitlines():
-        line = raw_line.strip()
-        if not line:
+    commits = []
+    seen = set()
+    for match in row_pattern.finditer(html):
+        commit = match.group('commit')
+        if commit in seen:
             continue
-        if '\t' in line and len(line.split('\t', 1)[0]) == 40:
-            commit, commit_ts = line.split('\t', 1)
-            current = {
+        seen.add(commit)
+        dt = datetime.strptime(match.group('date'), '%Y-%m-%d %H:%M:%S')
+        commits.append(
+            {
                 'commit': commit,
-                'commit_time': int(commit_ts),
-                'blob_path': None,
+                'commit_time': int(dt.replace(tzinfo=timezone.utc).timestamp()),
+                'blob_path': sheet_path,
             }
-            continue
-        if current and line.endswith('.xlsx'):
-            current['blob_path'] = line
-            entries.append(current)
-            current = None
-    return entries
+        )
+    return commits
+
+
+def run_curl_bytes(url):
+    command = ['curl', '--http1.1', '-L', '--silent', '--show-error', '--fail', url]
+    try:
+        result = subprocess.run(command, check=True, capture_output=True)
+    except subprocess.CalledProcessError:
+        result = subprocess.run(command + ['--retry', '3', '--retry-all-errors'], check=True, capture_output=True)
+    return result.stdout
+
+
+def run_curl_text(url):
+    return run_curl_bytes(url).decode('utf-8', errors='ignore')
 
 
 def load_blob_bytes(commit, blob_path):
-    return run_git_command(
-        ['show', f'{commit}:{blob_path}'],
-        cwd=MCP_CACHE_DIR,
-        capture_output=True,
-        text=False,
-    ).stdout
+    quoted_path = urllib.parse.quote(blob_path)
+    url = f'{MCP_SOURCEFORGE_CODE_URL}/{commit}/tree/{quoted_path}?format=raw'
+    return run_curl_bytes(url)
 
 
 def format_sheet_export_name(commit_time: int):

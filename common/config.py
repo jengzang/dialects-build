@@ -29,6 +29,7 @@ UPDATE_DATA_DIR = os.path.join(BASE_DIR, "data", "raw", "pull_yindian")
 
 # MCPDict 抓取/導出路徑依賴
 MCP_REPO_URL = "https://github.com/osfans/MCPDict.git"
+MCP_SOURCEFORGE_CODE_URL = "https://sourceforge.net/p/mcpdict/code/ci"
 MCP_TARGET_FOLDER = "tools/tables/output"
 MCP_SHEET_PATH = "tools/漢字音典字表檔案（長期更新）.xlsx"
 PULL_YINDIAN_DIR = Path(BASE_DIR) / "data" / "raw" / "pull_yindian"
