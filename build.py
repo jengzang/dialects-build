@@ -1,6 +1,10 @@
 import argparse
+from datetime import datetime, timezone
+import json
 import shutil
 import subprocess
+import io
+import tarfile
 from pathlib import Path
 
 """
@@ -8,11 +12,15 @@ from pathlib import Path
 """
 
 
-MCP_REPO_URL = "https://github.com/osfans/MCPDict.git"
-MCP_TARGET_FOLDER = "tools/tables/output"
-PULL_YINDIAN_DIR = Path("data/raw/pull_yindian")
-MCP_CACHE_DIR = Path("data/raw/.git_cache")
-MCP_VERSION_FILE = PULL_YINDIAN_DIR / ".last_commit"
+from common.config import (
+    MCP_REPO_URL,
+    MCP_TARGET_FOLDER,
+    PULL_YINDIAN_DIR,
+    ALL_YINDIAN_DIR,
+    MCP_CACHE_DIR,
+    MCP_VERSION_FILE,
+    ALL_YINDIAN_MAP_FILE,
+)
 
 
 def run_git_command(args, cwd=None, capture_output=False, text=True, encoding="utf-8"):
@@ -80,6 +88,117 @@ def has_exported_tsv_files():
     return any(path.suffix == '.tsv' for path in PULL_YINDIAN_DIR.iterdir() if path.is_file())
 
 
+def clear_target_dir(target_dir, preserve_names=None):
+    preserve_names = set(preserve_names or [])
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for child in target_dir.iterdir():
+        if child.name in preserve_names:
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def load_tar_member_bytes(commit, target_folder):
+    target_path = target_folder
+    try:
+        archive_bytes = run_git_command(
+            [
+                "archive",
+                "--format=tar",
+                commit,
+                target_path,
+            ],
+            cwd=MCP_CACHE_DIR,
+            capture_output=True,
+            text=False,
+        ).stdout
+    except subprocess.CalledProcessError:
+        target_path = "tools/tables"
+        archive_bytes = run_git_command(
+            [
+                "archive",
+                "--format=tar",
+                commit,
+                target_path,
+            ],
+            cwd=MCP_CACHE_DIR,
+            capture_output=True,
+            text=False,
+        ).stdout
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode='r:') as tar:
+        return {
+            Path(member.name).name: tar.extractfile(member).read()
+            for member in tar.getmembers()
+            if member.isfile() and member.name.endswith('.tsv') and tar.extractfile(member) is not None
+        }
+
+
+def export_all_history_tables():
+    ensure_mcp_cache()
+
+    print("📡 Fetching MCPDict latest commit for full history scan...")
+    run_git_command(["fetch", "origin", "master", "--quiet"], cwd=MCP_CACHE_DIR)
+
+    log_output = run_git_command(
+        ["log", "--format=%H\t%ct", "--all", "--", MCP_TARGET_FOLDER],
+        cwd=MCP_CACHE_DIR,
+        capture_output=True,
+    ).stdout
+    commit_lines = [line.strip() for line in log_output.splitlines() if line.strip()]
+    print(f"🧭 Scanning {len(commit_lines)} history commits...")
+
+    latest_by_name = {}
+    scanned = 0
+    for line in commit_lines:
+        commit, commit_ts = line.split('\t', 1)
+        files = list_full_export_files(commit)
+        scanned += 1
+        for relative_path in files:
+            file_name = Path(relative_path).name
+            if file_name in latest_by_name:
+                continue
+            latest_by_name[file_name] = {
+                'path': relative_path,
+                'commit': commit,
+                'commit_time': int(commit_ts),
+            }
+
+    print(f"🗂️ Collected {len(latest_by_name)} unique TSV names from {scanned} commits")
+
+    clear_target_dir(ALL_YINDIAN_DIR, preserve_names={ALL_YINDIAN_MAP_FILE.name})
+
+    commits_needed = sorted({meta['commit'] for meta in latest_by_name.values()})
+    tar_cache = {}
+    for idx, commit in enumerate(commits_needed, start=1):
+        print(f"📦 Loading archive {idx}/{len(commits_needed)}: {commit[:7]}")
+        tar_cache[commit] = load_tar_member_bytes(commit, MCP_TARGET_FOLDER)
+
+    history_map = {}
+    for idx, file_name in enumerate(sorted(latest_by_name), start=1):
+        meta = latest_by_name[file_name]
+        commit_files = tar_cache.get(meta['commit'], {})
+        if file_name not in commit_files:
+            raise RuntimeError(f"歷史導出缺少文件：{file_name} @ {meta['commit']}")
+        destination = ALL_YINDIAN_DIR / file_name
+        destination.write_bytes(commit_files[file_name])
+        history_map[file_name] = {
+            'path': meta['path'],
+            'commit': meta['commit'],
+            'commit_time': meta['commit_time'],
+            'commit_datetime': datetime.fromtimestamp(meta['commit_time'], tz=timezone.utc).isoformat(),
+        }
+        if idx <= 20 or idx % 200 == 0:
+            print(f"  [+] {file_name}")
+
+    ALL_YINDIAN_MAP_FILE.write_text(
+        json.dumps(history_map, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding='utf-8',
+    )
+    print(f"✨ All-history export done! files={len(history_map)} map={ALL_YINDIAN_MAP_FILE}")
+
+
 def export_mcp_tables(mode):
     ensure_mcp_cache()
 
@@ -108,17 +227,6 @@ def export_mcp_tables(mode):
     clear_pull_yindian_dir()
     print(f"🚚 Extracting {len(files_to_export)} files...")
 
-    run_git_command(
-        [
-            "archive",
-            "--format=tar",
-            latest_commit,
-            MCP_TARGET_FOLDER,
-        ],
-        cwd=MCP_CACHE_DIR,
-        capture_output=True,
-        text=False,
-    )
     archive_bytes = run_git_command(
         [
             "archive",
@@ -130,9 +238,6 @@ def export_mcp_tables(mode):
         capture_output=True,
         text=False,
     ).stdout
-
-    import io
-    import tarfile
 
     extracted_names = []
     with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode='r:') as tar:
@@ -174,7 +279,10 @@ def main(args):
     )
 
     if args.mcp_mode:
-        export_mcp_tables(args.mcp_mode)
+        if args.mcp_mode == 'all':
+            export_all_history_tables()
+        else:
+            export_mcp_tables(args.mcp_mode)
         if not args.type:
             return
 
@@ -251,12 +359,13 @@ if __name__ == "__main__":
     parser.add_argument(
         '-m', '--mcp', '--yindian',
         dest='mcp_mode',
-        choices=['full', 'diff'],
+        choices=['full', 'diff', 'all'],
         default=None,
         help=(
             "📥 拉取 MCPDict 的音典 TSV 到 data/raw/pull_yindian（单独使用时只拉取，不写库）：\n"
             "  full         → 全量导出\n"
             "  diff         → 增量导出（基于 .last_commit）\n"
+            "  all          → 遍歷歷史提交，按文件名保留最新版本，輸出到 data/raw/all_yindian/\n"
             "  若同时传入 -t，则拉取完成后继续执行对应处理流程\n"
         )
     )
