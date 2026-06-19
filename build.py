@@ -15,13 +15,13 @@ MCP_CACHE_DIR = Path("data/raw/.git_cache")
 MCP_VERSION_FILE = PULL_YINDIAN_DIR / ".last_commit"
 
 
-def run_git_command(args, cwd=None, capture_output=False):
+def run_git_command(args, cwd=None, capture_output=False, text=True, encoding="utf-8"):
     return subprocess.run(
         ["git", *args],
         cwd=cwd,
         check=True,
-        text=True,
-        encoding="utf-8",
+        text=text,
+        encoding=encoding if text else None,
         capture_output=capture_output,
     )
 
@@ -39,20 +39,20 @@ def ensure_mcp_cache():
 
 def list_full_export_files(latest_commit):
     result = run_git_command(
-        ["ls-tree", "-r", "--name-only", latest_commit, "--", f"{MCP_TARGET_FOLDER}/*.tsv"],
+        ["ls-tree", "-r", "--name-only", latest_commit, "--", MCP_TARGET_FOLDER],
         cwd=MCP_CACHE_DIR,
         capture_output=True,
     )
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return [line.strip() for line in result.stdout.splitlines() if line.strip().endswith('.tsv')]
 
 
 def list_diff_export_files(last_commit, latest_commit):
     result = run_git_command(
-        ["diff", "--name-only", last_commit, latest_commit, "--", f"{MCP_TARGET_FOLDER}/*.tsv"],
+        ["diff", "--name-only", last_commit, latest_commit, "--", MCP_TARGET_FOLDER],
         cwd=MCP_CACHE_DIR,
         capture_output=True,
     )
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return [line.strip() for line in result.stdout.splitlines() if line.strip().endswith('.tsv')]
 
 
 def clear_pull_yindian_dir():
@@ -66,6 +66,20 @@ def clear_pull_yindian_dir():
             child.unlink()
 
 
+def load_last_commit():
+    if not MCP_VERSION_FILE.exists():
+        return None
+    text = MCP_VERSION_FILE.read_text(encoding="utf-8", errors="ignore")
+    value = text.strip()
+    return value or None
+
+
+def has_exported_tsv_files():
+    if not PULL_YINDIAN_DIR.exists():
+        return False
+    return any(path.suffix == '.tsv' for path in PULL_YINDIAN_DIR.iterdir() if path.is_file())
+
+
 def export_mcp_tables(mode):
     ensure_mcp_cache()
 
@@ -73,9 +87,7 @@ def export_mcp_tables(mode):
     run_git_command(["fetch", "origin", "master", "--quiet"], cwd=MCP_CACHE_DIR)
     latest_commit = run_git_command(["rev-parse", "origin/master"], cwd=MCP_CACHE_DIR, capture_output=True).stdout.strip()
 
-    last_commit = None
-    if MCP_VERSION_FILE.exists():
-        last_commit = MCP_VERSION_FILE.read_text(encoding="utf-8").strip() or None
+    last_commit = load_last_commit()
 
     if mode == "full" or not last_commit:
         if mode == "diff" and not last_commit:
@@ -86,18 +98,66 @@ def export_mcp_tables(mode):
         print(f"🔍 Diffing: {last_commit} -> {latest_commit}")
         files_to_export = list_diff_export_files(last_commit, latest_commit)
 
+    if mode == 'full' and not has_exported_tsv_files() and not files_to_export:
+        raise RuntimeError("Full 模式未列出任何 TSV，且 pull_yindian 目錄為空，拒絕誤報 All up to date")
+
     if not files_to_export:
         print("✅ All up to date.")
         return
 
     clear_pull_yindian_dir()
     print(f"🚚 Extracting {len(files_to_export)} files...")
-    for relative_path in files_to_export:
-        file_name = Path(relative_path).name
-        destination = PULL_YINDIAN_DIR / file_name
-        content = run_git_command(["show", f"{latest_commit}:{relative_path}"], cwd=MCP_CACHE_DIR, capture_output=True).stdout
-        destination.write_text(content, encoding="utf-8")
-        print(f"  [+] {file_name}")
+
+    run_git_command(
+        [
+            "archive",
+            "--format=tar",
+            latest_commit,
+            MCP_TARGET_FOLDER,
+        ],
+        cwd=MCP_CACHE_DIR,
+        capture_output=True,
+        text=False,
+    )
+    archive_bytes = run_git_command(
+        [
+            "archive",
+            "--format=tar",
+            latest_commit,
+            MCP_TARGET_FOLDER,
+        ],
+        cwd=MCP_CACHE_DIR,
+        capture_output=True,
+        text=False,
+    ).stdout
+
+    import io
+    import tarfile
+
+    extracted_names = []
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode='r:') as tar:
+        member_map = {
+            Path(member.name).name: member
+            for member in tar.getmembers()
+            if member.isfile() and member.name.endswith('.tsv')
+        }
+        for relative_path in files_to_export:
+            file_name = Path(relative_path).name
+            member = member_map.get(file_name)
+            if member is None:
+                raise RuntimeError(f"archive 中找不到 {file_name}")
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                raise RuntimeError(f"無法從 archive 讀取 {file_name}")
+            destination = PULL_YINDIAN_DIR / file_name
+            destination.write_bytes(extracted.read())
+            extracted_names.append(file_name)
+            print(f"  [+] {file_name}")
+
+    if len(extracted_names) != len(files_to_export):
+        raise RuntimeError(
+            f"導出文件數不一致：預期 {len(files_to_export)}，實際 {len(extracted_names)}"
+        )
 
     MCP_VERSION_FILE.write_text(f"{latest_commit}\n", encoding="ascii")
     print(f"✨ Done! Version updated to {latest_commit[:7]}")
