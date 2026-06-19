@@ -344,6 +344,14 @@ def build_dialect_database(mode='admin'):
 
 
 def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_path=None):
+    log_dirs = {
+        os.path.dirname(MISSING_DATA_LOG),
+        os.path.dirname(WRITE_INFO_LOG),
+    }
+    for log_dir in log_dirs:
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
