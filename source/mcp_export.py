@@ -250,31 +250,47 @@ def export_mcp_tables(mode):
     print(f'✨ Done! Version updated to {latest_commit[:7]}')
 
 
-def build_sheet_history_entries(sheet_path=MCP_SHEET_PATH):
-    encoded_path = urllib.parse.quote('/' + sheet_path)
-    url = f'{MCP_SOURCEFORGE_CODE_URL}/master/log/?path={encoded_path}'
-    html = run_curl_text(url)
+def parse_sheet_history_page(html, sheet_path):
     row_pattern = re.compile(
         r'revision="(?P<commit>[0-9a-f]{40})".*?'
         r'<td style="vertical-align: text-top">\s*(?P<date>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*</td>.*?'
         r'href="/p/mcpdict/code/ci/(?P=commit)/tree/' + re.escape(sheet_path) + r'\?format=raw"',
         re.S,
     )
-    commits = []
-    seen = set()
+    entries = []
     for match in row_pattern.finditer(html):
-        commit = match.group('commit')
-        if commit in seen:
-            continue
-        seen.add(commit)
         dt = datetime.strptime(match.group('date'), '%Y-%m-%d %H:%M:%S')
-        commits.append(
+        entries.append(
             {
-                'commit': commit,
+                'commit': match.group('commit'),
                 'commit_time': int(dt.replace(tzinfo=timezone.utc).timestamp()),
                 'blob_path': sheet_path,
             }
         )
+
+    older_match = re.search(r'<a class="page_list" href="([^"]+)" rel="nofollow">Older &gt;</a>', html)
+    next_url = None
+    if older_match:
+        next_url = urllib.parse.urljoin(MCP_SOURCEFORGE_CODE_URL + '/', older_match.group(1))
+    return entries, next_url
+
+
+
+def build_sheet_history_entries(sheet_path=MCP_SHEET_PATH):
+    encoded_path = urllib.parse.quote('/' + sheet_path)
+    next_url = f'{MCP_SOURCEFORGE_CODE_URL}/master/log/?path={encoded_path}'
+    commits = []
+    seen = set()
+
+    while next_url:
+        html = run_curl_text(next_url)
+        page_entries, next_url = parse_sheet_history_page(html, sheet_path)
+        for entry in page_entries:
+            commit = entry['commit']
+            if commit in seen:
+                continue
+            seen.add(commit)
+            commits.append(entry)
     return commits
 
 
