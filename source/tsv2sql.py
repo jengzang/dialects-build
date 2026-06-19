@@ -77,6 +77,64 @@ def get_old_han_history_files(current_han_path=HAN_PATH):
     return current_file, matched
 
 
+def _build_abbreviation_status_entries(df):
+    status_by_name = {}
+    entries = []
+    for _, row in df.iterrows():
+        name = str(row['簡稱']).strip()
+        status = str(row.get('是否有人在做', '')).strip()
+        coord = str(row.get('norm_經緯度', '')).strip()
+        county = str(row.get('縣/市/區', '')).strip()
+        map_level = str(row.get('地圖級別', '')).strip()
+        status_by_name.setdefault(name, []).append(
+            {
+                'coord': coord,
+                'status': status,
+                'county': county,
+                'map_level': map_level,
+            }
+        )
+        entries.append(
+            {
+                'name': name,
+                'coord': coord,
+                'status': status,
+                'county': county,
+                'map_level': map_level,
+            }
+        )
+    return status_by_name, entries
+
+
+def _pop_unique_entry(entries, *, name=None, coord=None):
+    for idx, entry in enumerate(entries):
+        if name is not None and entry['name'] != name:
+            continue
+        if coord is not None and entry['coord'] != coord:
+            continue
+        return entries.pop(idx)
+    return None
+
+
+def _format_status_entry(entry):
+    suffix = [f"是否有人在做={entry['status']}"]
+    if entry['coord']:
+        suffix.append(f"經緯度={entry['coord']}")
+    if entry['county']:
+        suffix.append(f"縣/市/區={entry['county']}")
+    if entry['map_level']:
+        suffix.append(f"地圖級別={entry['map_level']}")
+    return ' | '.join(suffix)
+
+
+def _format_status_entry_from_entries(entries):
+    if not entries:
+        return '是否有人在做='
+    if len(entries) == 1:
+        return _format_status_entry(entries[0])
+    return '候選=' + ' || '.join(_format_status_entry(entry) for entry in entries)
+
+
 def _check_single_han_abbreviation_changes(current_file, old_file, status_filter=None):
     print("\n============================================================")
     print("步驟0：檢查新舊音典簡稱變化...")
@@ -158,18 +216,25 @@ def _check_single_han_abbreviation_changes(current_file, old_file, status_filter
             matched_old_idx.update(old_group.index.tolist())
             matched_new_idx.update(new_group.index.tolist())
 
+    old_status_entries, old_entries = _build_abbreviation_status_entries(old_df)
+    current_status_entries, new_entries = _build_abbreviation_status_entries(current_df)
+
+    for item in exact_renamed:
+        _pop_unique_entry(old_entries, name=item['old_簡稱'], coord=item['coord'])
+        _pop_unique_entry(new_entries, name=item['new_簡稱'], coord=item['coord'])
+
+    for item in exact_metadata_changed:
+        _pop_unique_entry(old_entries, name=item['old_簡稱'], coord=item['coord'])
+        _pop_unique_entry(new_entries, name=item['new_簡稱'], coord=item['coord'])
+
     old_unmatched = old_df[~old_df.index.isin(matched_old_idx)].copy()
     new_unmatched = current_df[~current_df.index.isin(matched_new_idx)].copy()
 
-    old_abbr_set = set(old_df['簡稱'].astype(str).str.strip())
-    new_abbr_set = set(current_df['簡稱'].astype(str).str.strip())
-    renamed_old_abbrs = {item['old_簡稱'] for item in exact_renamed}
-    renamed_new_abbrs = {item['new_簡稱'] for item in exact_renamed}
-    added_abbrs = sorted((new_abbr_set - old_abbr_set) - renamed_new_abbrs)
-    removed_abbrs = sorted((old_abbr_set - new_abbr_set) - renamed_old_abbrs)
+    old_abbr_set = {entry['name'] for entry in old_entries}
+    new_abbr_set = {entry['name'] for entry in new_entries}
+    added_abbrs = sorted(new_abbr_set - old_abbr_set)
+    removed_abbrs = sorted(old_abbr_set - new_abbr_set)
     same_name_unmatched = sorted(set(old_unmatched['簡稱'].astype(str).str.strip()) & set(new_unmatched['簡稱'].astype(str).str.strip()))
-    current_status_map = current_df.drop_duplicates(subset=['簡稱']).set_index('簡稱')['是否有人在做'].to_dict()
-    old_status_map = old_df.drop_duplicates(subset=['簡稱']).set_index('簡稱')['是否有人在做'].to_dict()
 
     print(f"   新表記錄數: {len(current_df)}")
     print(f"   舊表記錄數: {len(old_df)}")
@@ -183,7 +248,8 @@ def _check_single_han_abbreviation_changes(current_file, old_file, status_filter
     if added_abbrs:
         print("\n【新增簡稱】")
         for name in added_abbrs:
-            print(f"  + {name} | 是否有人在做={current_status_map.get(name, '')}")
+            for entry in [item for item in new_entries if item['name'] == name]:
+                print(f"  + {name} | {_format_status_entry(entry)}")
 
     if exact_renamed:
         print("\n【改名簡稱】")
@@ -198,7 +264,8 @@ def _check_single_han_abbreviation_changes(current_file, old_file, status_filter
     if removed_abbrs:
         print("\n【刪除簡稱】")
         for name in removed_abbrs:
-            print(f"  - {name} | 是否有人在做={old_status_map.get(name, '')}")
+            for entry in [item for item in old_entries if item['name'] == name]:
+                print(f"  - {name} | {_format_status_entry(entry)}")
 
     if exact_metadata_changed:
         print("\n【同點但元數據有變】")
@@ -227,8 +294,8 @@ def _check_single_han_abbreviation_changes(current_file, old_file, status_filter
         for name in same_name_unmatched:
             print(
                 f"  ? {name}"
-                f" | old是否有人在做={old_status_map.get(name, '')}"
-                f" | new是否有人在做={current_status_map.get(name, '')}"
+                f" | old{_format_status_entry_from_entries(old_status_entries.get(name, []))}"
+                f" | new{_format_status_entry_from_entries(current_status_entries.get(name, []))}"
             )
 
     return {
@@ -268,6 +335,14 @@ WEN_BAI_MARKS = {
     '-': WEN_BAI_COLLOQUIAL_MARK,
 }
 
+WEN_BAI_NOTE_PATTERNS = [
+    (re.compile(r'\[文\]|\(文\)|（文）'), WEN_BAI_LITERARY_MARK),
+    (re.compile(r'\[白\]|\(白\)|（白）'), WEN_BAI_COLLOQUIAL_MARK),
+    (re.compile(r'^\s*(?:文讀|文读|文)(?=$|[：:，,;；\s])'), WEN_BAI_LITERARY_MARK),
+    (re.compile(r'^\s*(?:白讀|白读|白)(?=$|[：:，,;；\s])'), WEN_BAI_COLLOQUIAL_MARK),
+    (re.compile(r'^\s*(?:讀書音|读书音)(?=$|[：:，,;；\s])'), WEN_BAI_LITERARY_MARK),
+]
+
 
 def split_wenbai_marker(value):
     text = '' if value is None else str(value).strip()
@@ -278,6 +353,24 @@ def split_wenbai_marker(value):
     if marker:
         return text[:-1].strip(), marker
     return text, ''
+
+
+def detect_wenbai_from_note(note):
+    text = '' if note is None else str(note).strip()
+    if not text:
+        return ''
+
+    for pattern, marker in WEN_BAI_NOTE_PATTERNS:
+        if pattern.search(text):
+            return marker
+    return ''
+
+
+def merge_wenbai_markers(primary_marker, note_marker):
+    primary = '' if primary_marker is None else str(primary_marker).strip()
+    if primary:
+        return primary
+    return '' if note_marker is None else str(note_marker).strip()
 
 
 def apply_polyphonic_labels(merged_df, group_columns):
@@ -654,6 +747,11 @@ def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_pat
             df["韻母"] = df["韵母"].astype(str).str.strip()
             df["聲調"] = df["声调"].astype(str).str.strip()
             df["註釋"] = df["註釋"].astype(str).str.strip() if "註釋" in df.columns else ""
+            note_wenbai_marks = df["註釋"].apply(detect_wenbai_from_note)
+            df["多音字"] = [
+                merge_wenbai_markers(primary_marker, note_marker)
+                for primary_marker, note_marker in zip(df["多音字"], note_wenbai_marks)
+            ]
 
             # 🚀 优化：使用向量化操作过滤数据，避免 iterrows()
             # 1. 过滤：至少有一个音韵特征不为空
