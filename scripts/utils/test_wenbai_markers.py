@@ -7,14 +7,14 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 
-from source.tsv2sql import (
+from common.wenbai_rules import (
     WEN_BAI_COLLOQUIAL_MARK,
     WEN_BAI_LITERARY_MARK,
-    apply_polyphonic_labels,
     detect_wenbai_from_note,
     merge_wenbai_markers,
     split_wenbai_marker,
 )
+from source.tsv2sql import apply_polyphonic_labels
 
 
 def assert_equal(actual, expected, label):
