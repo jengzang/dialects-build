@@ -6,7 +6,7 @@ import subprocess
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Optional
 
 from common.config import (
     ALL_SHEET_DIR,
@@ -291,7 +291,12 @@ def format_sheet_export_name(commit_time: int):
     return f'漢字音典字表檔案（長期更新）-{dt.strftime("%Y%m%d-%H%M%S")}.xlsx'
 
 
-def export_all_sheet_history(history_entries: Iterable[dict] | None = None, blob_loader: Callable[[str, str], bytes] | None = None, target_dir: Path | None = None, history_map_file: Path | None = None):
+def export_all_sheet_history(
+    history_entries: Optional[Iterable[dict]] = None,
+    blob_loader: Optional[Callable[[str, str], bytes]] = None,
+    target_dir: Optional[Path] = None,
+    history_map_file: Optional[Path] = None,
+):
     history_entries = list(history_entries if history_entries is not None else build_sheet_history_entries())
     blob_loader = blob_loader or load_blob_bytes
     target_dir = target_dir or ALL_SHEET_DIR
