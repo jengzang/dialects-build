@@ -91,10 +91,15 @@ chars/
 │   ├── format_convert.py      # 三種格式處理器（音典/跳跳老鼠/縣志）
 │   ├── process_tones.py       # 聲調提取與轉換
 │   ├── tsv2sql.py             # 數據庫寫入與查詢庫構建
+│   ├── mcp_export.py          # MCPDict 音典數據拉取與導出
 │   ├── convert_jyut.py        # 粵拼轉 IPA
 │   ├── match_fromdb.py        # 字符衝突解決
 │   ├── change_coordinates.py  # 坐標系轉換（百度→GCJ-02）
-│   └── get_new.py             # 音韻數據提取
+│   ├── get_new.py             # 音韻數據提取
+│   └── check/                 # 非交互式檢查工具
+│       ├── sheet.py           # 音典字表變動檢查
+│       ├── match.py           # TSV 文件名與簡稱匹配檢查
+│       └── tone_check.py      # xlsx 聲調欄檢查
 │
 ├── common/                     # 共享工具
 │   ├── config.py              # 路徑配置與數據庫定義
@@ -167,7 +172,9 @@ chars/
 - `raw2tsv.py`：識別字表格式並調度對應處理器
 - `format_convert.py`：包含三種格式的處理函數
 - `tsv2sql.py`：數據庫操作核心（寫入、查詢庫構建、同步）
+- `mcp_export.py`：拉取 MCPDict 音典資料，支持全量、增量與歷史導出
 - `process_tones.py`：聲調映射與轉換邏輯
+- `source/check/`：非交互式檢查入口，包括音典字表變動、TSV 文件名匹配與聲調欄檢查
 
 **scripts/ 工具**：
 - `check/`：交互式字表校驗系統（5 步檢查）
@@ -272,8 +279,16 @@ chars/
 ### 3. 數據處理管道
 
 ```
-原始字表 → 格式識別 → TSV轉換 → 聲調處理 → 數據提取 → 數據庫寫入 → 索引優化
+原始字表 / MCPDict 音典資料 → 格式識別 → TSV 轉換 → 聲調處理 → 數據提取 → 數據庫寫入 → 索引優化
 ```
+
+### 4. 數據拉取與檢查
+
+- ✅ 支持從 MCPDict 拉取音典資料：全量、增量、歷史 TSV、歷史 xlsx
+- ✅ 支持音典字表變動檢查：新增、改名、刪除與同坐標衝突
+- ✅ 支持只輸出「是否有人在做=不收」的記錄
+- ✅ 支持 xlsx 聲調欄檢查，列出異常調類與拆解失敗值
+- ✅ 支持 TSV 文件名與查詢庫簡稱匹配檢查
 
 ---
 
@@ -419,6 +434,15 @@ pip install opencc==1.1.9
 python build.py [選項]
 ```
 
+`build.py` 的命令行參數分為三類：
+
+| 類型 | 參數 | 用途 |
+|------|------|------|
+| 用戶模式 | `-u, --user` | 指定寫入 admin 或 user 數據庫 |
+| 音典拉取 | `-m, --mcp, --yindian` | 從 MCPDict 拉取音典資料 |
+| 處理流程 | `-t, --type` | 轉換、寫庫、建查詢庫、同步等主流程 |
+| 檢查流程 | `-c, --check` | 字表變動、聲調欄、文件名匹配等檢查 |
+
 #### 參數說明
 
 ##### `-u, --user`：用戶類型
@@ -435,53 +459,103 @@ python build.py [選項]
 - 如果磁盤空間有限，可以將這些文件移動到其他路徑存儲
 - `query_*.db` 和 `characters.db` 文件較小（通常 < 50 MB）
 
-具體區別是，user只寫入yindian文件夾下的數據，用於我的網站區分普通用戶和管理員數據庫。如果是自用，默認admin即可。
+具體區別是，user 只寫入 yindian 文件夾下的數據，用於網站區分普通用戶和管理員數據庫。如果是自用，默認 admin 即可。
 
-##### `-t, --type`：處理類型（可多選）
+##### `-m, --mcp, --yindian`：拉取 MCPDict 音典資料
 
-選擇要執行的功能，可以同時寫多個。可選值：
+從 MCPDict 拉取或導出音典資料。單獨使用 `-m` 時，只拉取數據，不寫庫；如果同時傳入 `-t` 或 `-c`，則拉取完成後繼續執行對應流程。
+
+| 值 | 功能 | 輸出位置 / 說明 |
+|----|------|----------------|
+| `full` | 全量導出 TSV | 導出 `tools/tables/output/*.tsv` 到 `data/raw/pull_yindian/` |
+| `diff` | 增量導出 TSV | 基於 `.last_commit` 拉取變更 |
+| `all` | 歷史 TSV 導出 | 遍歷歷史提交，按文件名保留最新 TSV，輸出到 `data/raw/all_yindian/` |
+| `all_sheet` | 歷史 xlsx 導出 | 導出歷史提交中的「漢字音典字表」xlsx 到 `data/raw/all_sheet/` |
+
+##### `-t, --type`：處理流程（可多選）
+
+選擇要執行的主處理功能，可以同時寫多個。可選值：
 
 | 值 | 功能 | 說明 |
 |----|------|------|
 | `convert` | 字表轉 TSV | 將原始字表轉換為標準 TSV 格式 |
-| `needchars` | 寫入中古音庫 | 同時寫入 dialects_all.db |
-| `query` | 建立查詢庫 | 生成 dialects_query.db |
-| `sync` | 同步存儲標記 | 在查詢庫中標記已存儲的方言點 |
-| `chars` | 寫入中古地位表 | 從 聲韻.xlsx 生成 characters.db |
-| `append` | 追加模式 | 只更新配置中標記為"待更新"的項 |
-| `update` | 增量更新模式 | 從 `data/raw/pull_yindian/` 目錄讀取 TSV 文件並更新到數據庫中，用於外部數據源的增量同步 |
+| `chars` | 寫入中古地位表 | 從 `聲韻.xlsx` 生成 `characters.db` |
+| `needchars` | 重寫中古音庫 | 寫入方言音韻數據庫時，同時重寫 `characters.db` 相關數據 |
+| `query` | 建立查詢庫 | 生成 `query_admin.db` 或 `query_user.db` |
+| `sync` | 同步方言標記 | 在查詢庫中標記已存儲的方言點 |
+| `append` | 追加模式 | 從補充表「待更新」列中添加，慎用 |
+| `update` | 增量更新模式 | 從 `data/raw/pull_yindian/` 讀取 TSV 並更新到數據庫中 |
 
-**注意**：不給參數，則默認把 processed 裡面的 tsv 寫入數據庫。
+**注意**：不給 `-m`、`-t`、`-c` 時，默認把已有 TSV 寫入數據庫。
+
+##### `-c, --check`：檢查流程（可多選）
+
+選擇要執行的檢查功能，可以同時寫多個。可選值：
+
+| 值 | 功能 | 說明 |
+|----|------|------|
+| `sheet` | 音典字表變動檢查 | 對比 `old/` 與當前音典文件，輸出簡稱新增、改名、刪除與同坐標衝突 |
+| `deny` | 不收記錄檢查 | 只輸出「是否有人在做=不收」的記錄，默認配合 `sheet` 使用 |
+| `tone` | 聲調欄檢查 | 檢查 xlsx 聲調欄，列出異常調類與拆解失敗值 |
+| `match` | TSV 文件名匹配檢查 | 逐個檢查 TSV 文件名匹配到的簡稱，輸出匹配結果 |
+
+**便捷規則**：
+
+| 寫法 | 等價於 | 說明 |
+|------|--------|------|
+| `python build.py -c` | `python build.py -c sheet` | 默認執行音典字表變動檢查 |
+| `python build.py -c deny` | `python build.py -c sheet deny` | 自動補上 `sheet` |
+| `python build.py -c sheet deny` | - | 檢查字表變動，但只輸出“不收”記錄 |
+| `python build.py -c tone` | - | 只檢查聲調欄 |
+| `python build.py -c match` | - | 只檢查 TSV 文件名匹配結果 |
 
 #### 常用命令範例
 
 ```bash
-# 【完整預處理】轉換+寫入所有數據庫
+# 查看幫助
+python build.py -h
+
+# 【默認寫庫】把已有 TSV 寫入 admin 數據庫
 python build.py
+
+# 【指定 user 模式】僅處理 yindian 目錄數據
+python build.py -u user
 
 # 【僅轉換】將所有原始字表轉為 TSV
 python build.py -u admin -t convert
 
-# 【建立數據庫】將 TSV 寫入數據庫（不包含中古音庫）
-python build.py -u admin
-
-# 【完整管理員模式】全流程處理
+# 【完整管理員模式】轉換、寫庫、建查詢庫、同步、生成中古地位表
 python build.py -u admin -t convert needchars sync query chars
 
-# 【普通用戶模式】僅處理 yindian 目錄數據
-python build.py -u user
+# 【拉取音典全量 TSV】只拉取，不寫庫
+python build.py -m full
 
-# 【增量更新】只更新特定方言點
-python build.py -u admin -t convert needchars append sync
+# 【拉取音典增量 TSV 後更新數據庫】
+python build.py -m diff -t update sync
 
-# 【增量更新】從 pull_yindian 目錄更新數據
+# 【只從 pull_yindian 目錄增量更新】
 python build.py -u admin -t update sync
 
-# 【組合更新】轉換新文件並增量更新
+# 【組合更新】先轉換新文件，再增量更新並同步標記
 python build.py -u admin -t convert update sync
 
-# 【僅更新查詢庫】重建方言點元數據
+# 【僅更新查詢庫】重建方言點元數據並同步存儲標記
 python build.py -u admin -t query sync
+
+# 【檢查音典字表變動】
+python build.py -c sheet
+
+# 【只輸出“不收”記錄】
+python build.py -c deny
+
+# 【檢查 xlsx 聲調欄】
+python build.py -c tone
+
+# 【檢查 TSV 文件名匹配結果】
+python build.py -c match
+
+# 【拉取增量後立即檢查字表變動】
+python build.py -m diff -c sheet
 ```
 
 ---
@@ -981,7 +1055,19 @@ col_map = {
 ### 完整流程圖
 
 ```
-原始字表 → 格式轉換 → 數據提取 → 數據庫寫入 → 查詢庫構建 → 完成
+原始字表 / MCPDict 音典資料
+    ↓
+格式轉換 / TSV 導出
+    ↓
+聲調處理與音韻數據提取
+    ↓
+數據庫寫入
+    ↓
+查詢庫構建與存儲標記同步
+    ↓
+字表變動、聲調欄、文件名匹配檢查
+    ↓
+完成
 ```
 
 ### 性能優化
