@@ -75,7 +75,11 @@ def get_dialects_db_tone_names(cell):
         return []
 
     tone_names = []
-    tag_value_pairs = re.findall(r'\[([0-9]{1,2}[a-zA-Z]?)\](?:\d{1,3})?([^\[\],\d]*)', text)
+    cell = re.sub(r'[-/ʔˀ]', '', str(cell))
+    tag_value_pairs = re.findall(
+        r"\[([0-9]{1,2}[a-zA-Z]?)\](?:\d+)?([^\[\],\d]*)",
+        cell
+    )
     for _tag, name in tag_value_pairs:
         name = name.strip()
         if name:

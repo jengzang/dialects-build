@@ -28,7 +28,8 @@ def extract_all_from_files(file_path: str, get_tone: bool = True, preserve_empty
                     continue
 
                 # 提取所有 [tag]字 的形式，如 [1a]陰平、[7B]上陰入
-                tag_value_pairs = re.findall(r"\[([0-9]{1,2}[a-zA-Z]?)\](?:\d{1,3})?([^\[\],\d]*)", cell)
+                cell = re.sub(r'[-/ʔˀ]', '', str(cell))
+                tag_value_pairs = re.findall(r"\[([0-9]{1,2}[a-zA-Z]?)\](?:\d+)?([^\[\],\d]*)", cell)
 
                 for tag, name in tag_value_pairs:
                     name = name.strip()
