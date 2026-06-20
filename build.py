@@ -32,14 +32,16 @@ def main(args):
         if not args.type and not args.check:
             return
 
+    from source.check.sheet import run_sheet_check
+    from source.check.match import run_match_check
     from source.tsv2sql import (
         write_to_sql,
         sync_dialects_flags,
         build_dialect_database,
         process_phonology_excel,
-        check_han_abbreviation_changes,
     )
     from source.tone_check import run_tone_check
+    from common.config import QUERY_DB_ADMIN_PATH, QUERY_DB_USER_PATH
 
     if 'convert' in args.type:
         from source.raw2tsv import convert_all_to_tsv
@@ -51,7 +53,12 @@ def main(args):
     # 2️⃣ 字表检查
     if 'sheet' in args.check:
         check_status_filter = '不收' if 'deny' in args.check else None
-        check_han_abbreviation_changes(status_filter=check_status_filter)
+        run_sheet_check(status_filter=check_status_filter)
+
+    # 2.5️⃣ TSV 文件名匹配检查
+    if 'match' in args.check:
+        match_query_db_path = QUERY_DB_ADMIN_PATH if args.user == 'admin' else QUERY_DB_USER_PATH
+        run_match_check(query_db_path=match_query_db_path)
 
     # 3️⃣ 聲調欄检查
     if 'tone' in args.check:
@@ -207,6 +214,7 @@ if __name__ == "__main__":
             'sheet',
             'deny',
             'tone',
+            'match',
         ],
         default=None,
         metavar='CHECK',
@@ -215,12 +223,14 @@ if __name__ == "__main__":
           sheet      对比 old/ 与当前音典文件，输出简称新增、改名、删除与同坐标冲突
           deny       只输出「是否有人在做=不收」的记录，默认配合 sheet 使用
           tone       检查 xlsx 声调栏，列出异常调类与拆解失败值
+          match      逐个检查 TSV 文件名匹配到的简称，输出匹配结果
 
         说明：
           -c              等价于 -c sheet
           -c deny         等价于 -c sheet deny
           -c sheet deny   检查字表变动，但只输出“不收”记录
           -c tone         只检查声调栏
+          -c match        只检查 TSV 文件名匹配结果
         """)
     )
 

@@ -22,6 +22,35 @@ converter_variant = opencc.OpenCC('tw2sp.json')
 
 
 def get_tsvs(output_dir=PROCESSED_DATA_DIR, partition_name='全部', single=None, query_db_path=None):
+    def apply_custom_variant(text):
+        for old, new in custom_variant_dict.items():
+            text = text.replace(old, new)
+        return text
+
+    def resolve_single_strict_match(loc, sort_order_abbr):
+        if not isinstance(loc, str) or not loc:
+            return None
+
+        exact_matches = [abbr for abbr in sort_order_abbr if abbr == loc]
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+
+        simp_matches = [
+            abbr for abbr in sort_order_abbr
+            if isinstance(abbr, str) and abbr and converter_t2s.convert(abbr) == converter_t2s.convert(loc)
+        ]
+        if len(simp_matches) == 1:
+            return simp_matches[0]
+
+        trad_matches = [
+            abbr for abbr in sort_order_abbr
+            if isinstance(abbr, str) and abbr and converter_s2t.convert(abbr) == converter_s2t.convert(loc)
+        ]
+        if len(trad_matches) == 1:
+            return trad_matches[0]
+
+        return None
+
     # Use the Path object for the directory
     output_dir = Path(output_dir)
     if single:
@@ -69,12 +98,19 @@ def get_tsvs(output_dir=PROCESSED_DATA_DIR, partition_name='全部', single=None
         for name, region in zip(sort_order_abbr, partition_raw)
     }
 
-    # 使用全局的 OpenCC 實例（已在模塊級別初始化）
+    if single:
+        single_name = original_locations[0]
+        strict_match = resolve_single_strict_match(single_name, sort_order_abbr)
+        if strict_match is not None:
+            current_partition = partition_map.get(strict_match, '')
+            if partition_name.strip() != "全部":
+                selected_parts = set(partition_name.strip().split())
+                if current_partition not in selected_parts:
+                    print(f"[❌ 單一模式] {single} 匹配到 {strict_match}，但不在指定分區 {selected_parts} 中。")
+                    return [str(Path(single))], [], []
+            return [str(Path(single))], [strict_match], [current_partition]
 
-    def apply_custom_variant(text):
-        for old, new in custom_variant_dict.items():
-            text = text.replace(old, new)
-        return text
+    # 使用全局的 OpenCC 實例（已在模塊級別初始化）
 
     unmatched_locations_step1 = []
     # 篩選分區處理
@@ -94,7 +130,7 @@ def get_tsvs(output_dir=PROCESSED_DATA_DIR, partition_name='全部', single=None
         else:
             unmatched_locations_step1.append(loc)
 
-    # Step 2: 簡轉繁匹配
+    # Step 1.5: 優先處理簡繁完全一致匹配，避免帶年份/前綴的條目被寬鬆規則誤命中
     sort_order_abbr_trad = [
         converter_s2t.convert(x) for x in sort_order_abbr
         if isinstance(x, str) and x  # 確保是非空字符串
