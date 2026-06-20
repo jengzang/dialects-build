@@ -352,11 +352,14 @@ def export_all_sheet_history(
     )
     print(f'✨ Sheet history export done! files={len(history_map)} map={history_map_file}')
 
-
 def export_mcp_assets(mode):
-    if mode == 'all':
-        export_all_history_tables()
-    elif mode == 'all_sheet':
-        export_all_sheet_history()
-    else:
-        export_mcp_tables(mode)
+    if mode in {'all', 'history', 'all-history', 'all_history'}:
+        return export_all_history_tables()
+
+    if mode in {'all_sheet', 'sheet-history', 'sheet_history'}:
+        return export_all_sheet_history()
+
+    if mode in {'full', 'diff'}:
+        return export_mcp_tables(mode)
+
+    raise ValueError(f'未知的 MCP export mode: {mode}')
