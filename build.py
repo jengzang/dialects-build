@@ -40,7 +40,7 @@ def main(args):
         build_dialect_database,
         process_phonology_excel,
     )
-    from source.tone_check import run_tone_check
+    from source.check.tone_check import run_tone_check
     from common.config import QUERY_DB_ADMIN_PATH, QUERY_DB_USER_PATH
 
     if 'convert' in args.type:
