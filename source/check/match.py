@@ -1,23 +1,9 @@
 from pathlib import Path
 import sqlite3
+import pydoc
 
 from common.config import PROCESSED_DATA_DIR, YINDIAN_DATA_DIR, QUERY_DB_PATH
 from source.match_fromdb import get_tsvs
-
-
-DISPLAY_WIDTH = 24
-PATH_WIDTH = 72
-PART_WIDTH = 8
-STATUS_WIDTH = 10
-
-
-def _truncate(text, width):
-    text = '' if text is None else str(text)
-    if len(text) <= width:
-        return text.ljust(width)
-    if width <= 1:
-        return text[:width]
-    return (text[:width - 1] + '…').ljust(width)
 
 
 def _iter_tsv_paths():
@@ -77,6 +63,35 @@ def _check_one_file(path, query_db_path):
     }
 
 
+def _should_display_row(row):
+    """
+    只在终端显示需要关注的文件：
+    1. 未匹配文件
+    2. 匹配成功，但文件名簡稱和最终簡稱不完全一致
+    """
+    if row['status'] != 'OK':
+        return True
+
+    return row['filename'] != row['matched']
+
+
+def _format_row_detail(row, index):
+    lines = [
+        f'{index}. [{row["status"]}] {row["filename"]}',
+        f'   來源: {row["source"]}',
+    ]
+
+    if row['matched']:
+        lines.append(f'   最終簡稱: {row["matched"]}')
+
+    if row['partition']:
+        lines.append(f'   分區: {row["partition"]}')
+
+    lines.append(f'   路徑: {row["path"]}')
+
+    return '\n'.join(lines)
+
+
 def run_match_check(query_db_path=QUERY_DB_PATH):
     rows = []
     total = 0
@@ -101,6 +116,7 @@ def run_match_check(query_db_path=QUERY_DB_PATH):
         total += 1
         row = _check_one_file(path, query_db_path=query_db_path)
         rows.append(row)
+
         if row['status'] == 'OK':
             ok_count += 1
         else:
@@ -114,32 +130,52 @@ def run_match_check(query_db_path=QUERY_DB_PATH):
         print('\n⚠️ 沒有找到任何 TSV 文件。')
         return rows
 
-    print('\n【匹配明細】')
-    header = (
-        f"{'來源'.ljust(12)} "
-        f"{'文件名'.ljust(DISPLAY_WIDTH)} "
-        f"{'最終簡稱'.ljust(DISPLAY_WIDTH)} "
-        f"{'分區'.ljust(PART_WIDTH)} "
-        f"{'狀態'.ljust(STATUS_WIDTH)} "
-        f"路徑"
-    )
-    print(header)
-    print('-' * max(110, len(header)))
+    display_rows = [row for row in rows if _should_display_row(row)]
+    same_count = len(rows) - len(display_rows)
+    mismatch_rows = [
+        row for row in display_rows
+        if row['status'] == 'OK' and row['filename'] != row['matched']
+    ]
+    miss_rows = [row for row in display_rows if row['status'] != 'OK']
 
-    for row in rows:
-        print(
-            f"{row['source'].ljust(12)} "
-            f"{_truncate(row['filename'], DISPLAY_WIDTH)} "
-            f"{_truncate(row['matched'], DISPLAY_WIDTH)} "
-            f"{_truncate(row['partition'], PART_WIDTH)} "
-            f"{row['status'].ljust(STATUS_WIDTH)} "
-            f"{_truncate(row['path'], PATH_WIDTH)}"
-        )
+    print(f'\n簡稱完全一致 {same_count} 個，已省略顯示')
+    print(f'簡稱不一致 {len(mismatch_rows)} 個')
+    print(f'未匹配 {len(miss_rows)} 個')
+    print(f'需要關注 {len(display_rows)} 個')
 
-    miss_rows = [row for row in rows if row['status'] != 'OK']
+    if not display_rows:
+        print('\n✅ 所有已匹配文件的簡稱均完全一致，且沒有未匹配文件。')
+        return rows
+
+    lines = []
+
+    lines.append('【需要關注的文件】')
+    lines.append('')
+    lines.append(f'共 {len(display_rows)} 個')
+    lines.append(f'  - 簡稱不一致: {len(mismatch_rows)} 個')
+    lines.append(f'  - 未匹配: {len(miss_rows)} 個')
+    lines.append('')
+
+    if mismatch_rows:
+        lines.append('============================================================')
+        lines.append('【簡稱不一致】')
+        lines.append('============================================================')
+        lines.append('')
+
+        for index, row in enumerate(mismatch_rows, start=1):
+            lines.append(_format_row_detail(row, index))
+            lines.append('')
+
     if miss_rows:
-        print('\n【未匹配文件】')
-        for row in miss_rows:
-            print(f"  - {row['path']}")
+        lines.append('============================================================')
+        lines.append('【未匹配文件】')
+        lines.append('============================================================')
+        lines.append('')
+
+        for index, row in enumerate(miss_rows, start=1):
+            lines.append(_format_row_detail(row, index))
+            lines.append('')
+
+    pydoc.pager('\n'.join(lines))
 
     return rows
