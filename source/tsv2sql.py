@@ -477,32 +477,6 @@ def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_pat
     cursor.execute("PRAGMA synchronous = NORMAL")
     cursor.execute("PRAGMA journal_mode = DELETE")
 
-    # 創建索引，加快查詢速度
-    # update 模式下跳過創建索引（索引已存在，不需要重新創建）
-    if not update:
-        print("※ 開始創建索引 ※")
-        # 基础单列索引（FastAPI 后端频繁查询的字段）
-        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr ON dialects(簡稱);")
-        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_char ON dialects(漢字);")
-        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_syllable ON dialects(音節);")
-        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_polyphonic ON dialects(多音字);")  # 新增：多音字查询
-
-        # 复合索引，优化多字段查询和 GROUP BY
-        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_char_abbr ON dialects(漢字, 簡稱);")  # FastAPI 最重要
-        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_char ON dialects(簡稱, 漢字);")
-        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_char_syllable ON dialects(簡稱, 漢字, 音節);")
-
-        # 【优先级高】用于音韵特征查询（分别优化聲母/韻母/聲調查询）
-        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_initial ON dialects(簡稱, 聲母);")
-        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_final ON dialects(簡稱, 韻母);")
-        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_tone ON dialects(簡稱, 聲調);")
-
-        # 【优先级高】优化多音字查询（WHERE 多音字='1' AND 簡稱=? AND 漢字 IN ...）
-        conn_all.execute("CREATE INDEX IF NOT EXISTS idx_dialects_polyphonic_full ON dialects(多音字, 簡稱, 漢字);")
-        print("✅ 索引創建完成")
-    else:
-        print("⏭️  update 模式：跳過創建索引（索引已存在）")
-
     conn_all.commit()
     conn_all.close()  # 🔧 修复：关闭数据库连接，避免锁定
 
@@ -515,6 +489,29 @@ def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_pat
     # print(f"\n📝 已寫入紀錄至：{log_path}")
 
     return processed_簡稱  # Return list of processed dialects
+
+
+def ensure_dialects_indexes(conn):
+    print("※ 開始創建索引 ※")
+    # 基础单列索引（FastAPI 后端频繁查询的字段）
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr ON dialects(簡稱);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_char ON dialects(漢字);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_syllable ON dialects(音節);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_polyphonic ON dialects(多音字);")
+
+    # 复合索引，优化多字段查询和 GROUP BY
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_char_abbr ON dialects(漢字, 簡稱);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_char ON dialects(簡稱, 漢字);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_char_syllable ON dialects(簡稱, 漢字, 音節);")
+
+    # 【优先级高】用于音韵特征查询（分别优化聲母/韻母/聲調查询）
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_initial ON dialects(簡稱, 聲母);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_final ON dialects(簡稱, 韻母);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_abbr_tone ON dialects(簡稱, 聲調);")
+
+    # 【优先级高】优化多音字查询（WHERE 多音字='1' AND 簡稱=? AND 漢字 IN ...）
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dialects_polyphonic_full ON dialects(多音字, 簡稱, 漢字);")
+    print("✅ 索引創建完成")
 
 
 # 🚀 优化版本：分批處理，避免內存溢出
@@ -1111,6 +1108,14 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
     else:
         # Use full processing for normal/append mode
         process_polyphonic_annotations(dialects_db_path)
+
+    if not update:
+        conn_indexes = sqlite3.connect(dialects_db_path)
+        ensure_dialects_indexes(conn_indexes)
+        conn_indexes.commit()
+        conn_indexes.close()
+    else:
+        print("⏭️  update 模式：跳過創建索引（索引已存在）")
 
     step_times['步驟3：處理重複行和多音字'] = time.time() - step3_start
 
