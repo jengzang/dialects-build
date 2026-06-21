@@ -169,6 +169,7 @@ def extract_all_from_files(file_path: str, get_tone: bool = True, preserve_empty
 
             # 提取聲母
             consonant = ""
+            rhyme_start = 0
             if phon and phon[0] in {"∅", "Ø"}:
                 consonant = "ʔ"
             else:
@@ -176,7 +177,10 @@ def extract_all_from_files(file_path: str, get_tone: bool = True, preserve_empty
                     vowel_fallback = r"([ʐɣmnŋɲȵƞʋvʒlḷfzr])"
                     # if phon[0] in ['l', 'f']:
                     #     consonant = phon[0]
-                    if re.match(vowel_fallback, phon[0]):
+                    if re.match(r"^[mn]ŋ", phon):
+                        consonant = phon[0]
+                        rhyme_start = 1
+                    elif re.match(vowel_fallback, phon[0]):
                         consonant = "/"
                     elif not re.search(vowel_fallback, phon):
                         # consonant = f"報錯：{phon}"
@@ -203,7 +207,7 @@ def extract_all_from_files(file_path: str, get_tone: bool = True, preserve_empty
 
             # 韻母提取
             all_rhymes = []
-            tmp_phon = phon[1:] if phon.startswith(("∅", "Ø")) else phon
+            tmp_phon = phon[1:] if phon.startswith(("∅", "Ø")) else phon[rhyme_start:]
             if 'j' not in tmp_phon[1:] and 'ʲ' not in tmp_phon[1:]:
                 vowel_found = False
                 for c in tmp_phon:
