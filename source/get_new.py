@@ -230,7 +230,7 @@ def extract_all_from_files(file_path: str, get_tone: bool = True, preserve_empty
             rhyme = ''.join(c for c in all_rhymes if not (c.isdigit() or re.match(r'[一-鿿]', c)))
             for old, new in {
                 'ε': 'ɛ', "α": "ɑ", "ʯ": "ʮ", "∅": "ø", "ο": "o", "ǝ": "ə", "о": "o", "у": "y", "е": "e",
-                "ã": "ã", "ẽ": "ẽ", "ĩ": "ĩ", "ī": "ĩ", "ā": "ã", "ỹ": "ỹ", "õ": "õ", "ʱ": "ʰ"
+                "ã": "ã", "ẽ": "ẽ", "ĩ": "ĩ", "ī": "ĩ", "ā": "ã", "ỹ": "ỹ", "õ": "õ", "ʱ": "ʰ", "ˡ": "ʰ"
             }.items():
                 rhyme = rhyme.replace(old, new)
 

@@ -34,6 +34,7 @@ def main(args):
 
     from source.check.sheet import run_sheet_check
     from source.check.match import run_match_check
+    from source.check.tone_match import check_matched_tsvs_without_tone_info
     from source.tsv2sql import (
         write_to_sql,
         sync_dialects_flags,
@@ -63,6 +64,11 @@ def main(args):
     # 3️⃣ 聲調欄检查
     if 'tone' in args.check:
         run_tone_check()
+
+    if 'tone-data' in args.check:
+        match_query_db_path = QUERY_DB_ADMIN_PATH if args.user == 'admin' else QUERY_DB_USER_PATH 
+        check_matched_tsvs_without_tone_info(query_db_path=match_query_db_path)
+
 
     # 4️⃣ 寫入資料庫（admin 或 user）
     # 保持原有默认行为：
@@ -215,6 +221,7 @@ if __name__ == "__main__":
             'deny',
             'tone',
             'match',
+            'tone-data'
         ],
         default=None,
         metavar='CHECK',
@@ -224,6 +231,7 @@ if __name__ == "__main__":
           deny       只输出「是否有人在做=不收」的记录，默认配合 sheet 使用
           tone       检查 xlsx 声调栏，列出异常调类与拆解失败值
           match      逐个检查 TSV 文件名匹配到的简称，输出匹配结果
+          tone-data  检查成功匹配的简称里，有哪些是没有声调数据的
 
         说明：
           -c              等价于 -c sheet
@@ -231,6 +239,7 @@ if __name__ == "__main__":
           -c sheet deny   检查字表变动，但只输出“不收”记录
           -c tone         只检查声调栏
           -c match        只检查 TSV 文件名匹配结果
+          -c tone-data    只检查匹配成功的 TSV 是否有声调数据         
         """)
     )
 

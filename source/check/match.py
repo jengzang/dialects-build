@@ -92,24 +92,28 @@ def _format_row_detail(row, index):
     return '\n'.join(lines)
 
 
-def run_match_check(query_db_path=QUERY_DB_PATH):
+def run_match_check(query_db_path=QUERY_DB_PATH, show_output=True, use_pager=True):
     rows = []
     total = 0
     ok_count = 0
     miss_count = 0
 
-    print('\n============================================================')
-    print('步驟0：模擬最終 TSV 文件名 -> 簡稱 匹配結果...')
-    print('============================================================')
-    print(f'   query_db: {query_db_path}')
-    print(f'   yindian:  {YINDIAN_DATA_DIR}')
-    print(f'   processed:{PROCESSED_DATA_DIR}')
-    print('   說明: 直接調用 get_tsvs(single=...)，與最終寫庫匹配鏈路保持一致')
+    def _emit(text=''):
+        if show_output:
+            print(text)
+
+    _emit('\n============================================================')
+    _emit('步驟0：模擬最終 TSV 文件名 -> 簡稱 匹配結果...')
+    _emit('============================================================')
+    _emit(f'   query_db: {query_db_path}')
+    _emit(f'   yindian:  {YINDIAN_DATA_DIR}')
+    _emit(f'   processed:{PROCESSED_DATA_DIR}')
+    _emit('   說明: 直接調用 get_tsvs(single=...)，與最終寫庫匹配鏈路保持一致')
 
     ready, message = _check_query_db_ready(query_db_path)
     if not ready:
-        print(f'\n❌ 無法執行 match 檢查：{message}')
-        print('   先运行：python build.py -t query')
+        _emit(f'\n❌ 無法執行 match 檢查：{message}')
+        _emit('   先运行：python build.py -t query')
         return rows
 
     for path in _iter_tsv_paths():
@@ -122,12 +126,12 @@ def run_match_check(query_db_path=QUERY_DB_PATH):
         else:
             miss_count += 1
 
-    print(f'\n共掃描 {total} 個 TSV 文件')
-    print(f'匹配成功 {ok_count} 個')
-    print(f'匹配失敗 {miss_count} 個')
+    _emit(f'\n共掃描 {total} 個 TSV 文件')
+    _emit(f'匹配成功 {ok_count} 個')
+    _emit(f'匹配失敗 {miss_count} 個')
 
     if not rows:
-        print('\n⚠️ 沒有找到任何 TSV 文件。')
+        _emit('\n⚠️ 沒有找到任何 TSV 文件。')
         return rows
 
     display_rows = [row for row in rows if _should_display_row(row)]
@@ -138,13 +142,13 @@ def run_match_check(query_db_path=QUERY_DB_PATH):
     ]
     miss_rows = [row for row in display_rows if row['status'] != 'OK']
 
-    print(f'\n簡稱完全一致 {same_count} 個，已省略顯示')
-    print(f'簡稱不一致 {len(mismatch_rows)} 個')
-    print(f'未匹配 {len(miss_rows)} 個')
-    print(f'需要關注 {len(display_rows)} 個')
+    _emit(f'\n簡稱完全一致 {same_count} 個，已省略顯示')
+    _emit(f'簡稱不一致 {len(mismatch_rows)} 個')
+    _emit(f'未匹配 {len(miss_rows)} 個')
+    _emit(f'需要關注 {len(display_rows)} 個')
 
     if not display_rows:
-        print('\n✅ 所有已匹配文件的簡稱均完全一致，且沒有未匹配文件。')
+        _emit('\n✅ 所有已匹配文件的簡稱均完全一致，且沒有未匹配文件。')
         return rows
 
     lines = []
@@ -176,6 +180,11 @@ def run_match_check(query_db_path=QUERY_DB_PATH):
             lines.append(_format_row_detail(row, index))
             lines.append('')
 
-    pydoc.pager('\n'.join(lines))
+    if show_output:
+        report_text = '\n'.join(lines)
+        if use_pager:
+            pydoc.pager(report_text)
+        else:
+            print(report_text)
 
     return rows
