@@ -5,9 +5,18 @@ from pathlib import Path
 
 import pandas as pd
 
-from common.config import HAN_PATH, YINDIAN_DATA_DIR, QUERY_DB_PATH, exclude_files
+from common.config import HAN_PATH, YINDIAN_DATA_DIR, QUERY_DB_PATH
+from common.constants import exclude_files
 from source.match_fromdb import get_tsvs
 from source.check.tone_check import load_tone_dataframe, TONE_INDEX_TO_LABEL
+
+
+EXCLUDE_SHORTNAMES = {str(item).strip() for item in exclude_files}
+
+
+def _is_excluded_shortname(shortname):
+    return str(shortname).strip() in EXCLUDE_SHORTNAMES
+
 
 def _cell_has_value(value):
     if value is None:
@@ -20,6 +29,7 @@ def _cell_has_value(value):
         pass
 
     text = str(value).strip()
+
     if not text:
         return False
 
@@ -44,26 +54,7 @@ def _get_tone_columns(include_biantiao=True, include_qingsheng=True):
     return [TONE_INDEX_TO_LABEL[index] for index in indexes]
 
 
-def _iter_yindian_tsv_paths():
-    """
-    tone-data 只检查 yindian 来源。
-    processed 是另一个来源，这里不扫描、不统计、不输出。
-    """
-    root = Path(YINDIAN_DATA_DIR)
-
-    if not root.exists():
-        return
-
-    for path in sorted(root.glob('*.tsv')):
-        if path.is_file():
-            yield path
-
-
 def _check_query_db_ready(query_db_path):
-    """
-    tone-data 必须使用 get_tsvs，而 get_tsvs 依赖 query db 的 dialects 表。
-    这里自己检查，不复用 source.check.match 里的函数。
-    """
     db_path = Path(query_db_path)
 
     if not db_path.exists():
@@ -83,6 +74,60 @@ def _check_query_db_ready(query_db_path):
     return True, ''
 
 
+def _iter_all_yindian_tsv_paths():
+    root = Path(YINDIAN_DATA_DIR)
+
+    if not root.exists():
+        return
+
+    for path in sorted(root.glob('*.tsv')):
+        if path.is_file():
+            yield path
+
+
+def _iter_checked_yindian_tsv_paths():
+    """
+    tone-data 只检查 yindian 来源。
+
+    processed 是另一个来源，这里不扫描、不统计、不输出。
+
+    exclude_files 中的文件在进入 get_tsvs 之前就排除。
+    """
+    for path in _iter_all_yindian_tsv_paths():
+        if _is_excluded_shortname(path.stem):
+            continue
+
+        yield path
+
+
+def _count_all_yindian_tsvs():
+    return sum(1 for _ in _iter_all_yindian_tsv_paths())
+
+
+def _count_excluded_yindian_tsvs():
+    count = 0
+
+    for path in _iter_all_yindian_tsv_paths():
+        if _is_excluded_shortname(path.stem):
+            count += 1
+
+    return count
+
+
+def _load_workbook_map(excel_path):
+    workbook_df = load_tone_dataframe(excel_path)
+
+    workbook_map = {
+        str(row['簡稱']).strip(): row
+        for _, row in workbook_df.iterrows()
+        if str(row.get('簡稱', '')).strip()
+        and not str(row.get('簡稱', '')).strip().startswith('#')
+        and not _is_excluded_shortname(row.get('簡稱', ''))
+    }
+
+    return workbook_df, workbook_map
+
+
 def _match_one_yindian_tsv_by_get_tsvs(path, query_db_path):
     """
     使用 get_tsvs(single=...) 对单个 yindian TSV 做真实匹配。
@@ -94,19 +139,42 @@ def _match_one_yindian_tsv_by_get_tsvs(path, query_db_path):
     stem = path.stem
     source = path.parent.name
 
-    matched_paths, locations, partitions = get_tsvs(
-        single=str(path),
-        query_db_path=query_db_path,
-    )
+    try:
+        matched_paths, locations, partitions = get_tsvs(
+            single=str(path),
+            query_db_path=query_db_path,
+        )
+    except Exception as exc:
+        return {
+            'source': source,
+            'filename': stem,
+            'matched': '',
+            'partition': '',
+            'status': 'ERROR',
+            'error': str(exc),
+            'path': str(path),
+        }
 
     matched = [loc for loc in locations if loc != '_']
     parts = [part for part in partitions if part]
 
     if matched:
+        final_shortname = matched[0]
+
+        if _is_excluded_shortname(final_shortname):
+            return {
+                'source': source,
+                'filename': stem,
+                'matched': final_shortname,
+                'partition': parts[0] if parts else '',
+                'status': 'EXCLUDED',
+                'path': matched_paths[0] if matched_paths else str(path),
+            }
+
         return {
             'source': source,
             'filename': stem,
-            'matched': matched[0],
+            'matched': final_shortname,
             'partition': parts[0] if parts else '',
             'status': 'OK',
             'path': matched_paths[0] if matched_paths else str(path),
@@ -129,13 +197,13 @@ def collect_yindian_tsv_match_rows_by_get_tsvs(query_db_path=QUERY_DB_PATH):
     特点：
     1. 只扫描 yindian。
     2. 不扫描 processed。
-    3. 不调用 run_match_check。
-    4. 但必须调用 get_tsvs(single=...)，保持和最终写库匹配链路一致。
+    3. 先排除 exclude_files。
+    4. 不调用 source.check.match.run_match_check。
+    5. 但必须调用 get_tsvs(single=...)，保持和最终写库匹配链路一致。
     """
-
     rows = []
 
-    for path in _iter_yindian_tsv_paths():
+    for path in _iter_checked_yindian_tsv_paths():
         row = _match_one_yindian_tsv_by_get_tsvs(
             path,
             query_db_path=query_db_path,
@@ -144,12 +212,13 @@ def collect_yindian_tsv_match_rows_by_get_tsvs(query_db_path=QUERY_DB_PATH):
 
     return rows
 
+
 def check_matched_tsvs_without_tone_info(
     excel_path=HAN_PATH,
     query_db_path=QUERY_DB_PATH,
     include_biantiao=True,
     include_qingsheng=True,
-    use_pager=True,
+    use_pager=False,
 ):
     """
     tone-data 专用检查。
@@ -157,9 +226,10 @@ def check_matched_tsvs_without_tone_info(
     逻辑：
     1. 只扫描 YINDIAN_DATA_DIR 下的 TSV。
     2. 不扫描 processed。
-    3. 不调用 run_match_check。
-    4. 使用 get_tsvs(single=...) 做真实 TSV -> 最终简称匹配。
-    5. 只针对匹配成功 status == OK 的最终简称检查声调信息。
+    3. 先排除 exclude_files。
+    4. 不调用 source.check.match.run_match_check。
+    5. 使用 get_tsvs(single=...) 做真实 TSV -> 最终简称匹配。
+    6. 只针对匹配成功 status == OK 的最终简称检查声调信息。
     """
 
     ready, message = _check_query_db_ready(query_db_path)
@@ -173,32 +243,36 @@ def check_matched_tsvs_without_tone_info(
             'match_rows': [],
             'matched_rows': [],
             'match_failed_tsv_rows': [],
+            'match_error_tsv_rows': [],
+            'excluded_after_match_rows': [],
             'xlsx_missing_rows': [],
             'no_tone_rows': [],
         }
 
-    workbook_df = load_tone_dataframe(excel_path)
+    workbook_df, workbook_map = _load_workbook_map(excel_path)
 
-    workbook_map = {
-        str(row['簡稱']).strip(): row
-        for _, row in workbook_df.iterrows()
-        if str(row.get('簡稱', '')).strip()
-        and not str(row.get('簡稱', '')).strip().startswith('#')
-    }
+    total_yindian_tsv_count = _count_all_yindian_tsvs()
+    excluded_tsv_count = _count_excluded_yindian_tsvs()
 
     match_rows = collect_yindian_tsv_match_rows_by_get_tsvs(
         query_db_path=query_db_path,
     )
 
     if not match_rows:
-        print('\n❌ 無法執行聲調信息檢查：沒有掃描到任何 yindian TSV 文件。')
+        print('\n❌ 無法執行聲調信息檢查：排除 exclude_files 后，没有任何 yindian TSV 文件进入检查。')
         print(f'   yindian: {YINDIAN_DATA_DIR}')
+        print(f'   yindian TSV 总数: {total_yindian_tsv_count}')
+        print(f'   已排除 TSV 数: {excluded_tsv_count}')
         return {
             'summary': {
-                'tsv_count': 0,
+                'total_yindian_tsv_count': total_yindian_tsv_count,
+                'excluded_tsv_count': excluded_tsv_count,
+                'checked_tsv_count': 0,
                 'matched_tsv_count': 0,
                 'unique_matched_shortname_count': 0,
                 'match_failed_tsv_count': 0,
+                'match_error_tsv_count': 0,
+                'excluded_after_match_count': 0,
                 'xlsx_missing_count': 0,
                 'no_tone_count': 0,
                 'existing_tone_columns': [],
@@ -206,6 +280,8 @@ def check_matched_tsvs_without_tone_info(
             'match_rows': [],
             'matched_rows': [],
             'match_failed_tsv_rows': [],
+            'match_error_tsv_rows': [],
+            'excluded_after_match_rows': [],
             'xlsx_missing_rows': [],
             'no_tone_rows': [],
         }
@@ -225,10 +301,14 @@ def check_matched_tsvs_without_tone_info(
         print(f'   期望列名: {tone_columns}')
         return {
             'summary': {
-                'tsv_count': len(match_rows),
+                'total_yindian_tsv_count': total_yindian_tsv_count,
+                'excluded_tsv_count': excluded_tsv_count,
+                'checked_tsv_count': len(match_rows),
                 'matched_tsv_count': 0,
                 'unique_matched_shortname_count': 0,
                 'match_failed_tsv_count': 0,
+                'match_error_tsv_count': 0,
+                'excluded_after_match_count': 0,
                 'xlsx_missing_count': 0,
                 'no_tone_count': 0,
                 'existing_tone_columns': [],
@@ -236,16 +316,26 @@ def check_matched_tsvs_without_tone_info(
             'match_rows': match_rows,
             'matched_rows': [],
             'match_failed_tsv_rows': [],
+            'match_error_tsv_rows': [],
+            'excluded_after_match_rows': [],
             'xlsx_missing_rows': [],
             'no_tone_rows': [],
         }
 
     matched_rows = []
     match_failed_tsv_rows = []
+    match_error_tsv_rows = []
+    excluded_after_match_rows = []
 
     for row in match_rows:
-        if row.get('status') == 'OK' and row.get('matched'):
+        status = row.get('status')
+
+        if status == 'OK' and row.get('matched'):
             matched_rows.append(row)
+        elif status == 'ERROR':
+            match_error_tsv_rows.append(row)
+        elif status == 'EXCLUDED':
+            excluded_after_match_rows.append(row)
         else:
             match_failed_tsv_rows.append(row)
 
@@ -285,10 +375,14 @@ def check_matched_tsvs_without_tone_info(
             })
 
     summary = {
-        'tsv_count': len(match_rows),
+        'total_yindian_tsv_count': total_yindian_tsv_count,
+        'excluded_tsv_count': excluded_tsv_count,
+        'checked_tsv_count': len(match_rows),
         'matched_tsv_count': len(matched_rows),
         'unique_matched_shortname_count': len(matched_by_shortname),
         'match_failed_tsv_count': len(match_failed_tsv_rows),
+        'match_error_tsv_count': len(match_error_tsv_rows),
+        'excluded_after_match_count': len(excluded_after_match_rows),
         'xlsx_missing_count': len(xlsx_missing_rows),
         'no_tone_count': len(no_tone_rows),
         'existing_tone_columns': existing_tone_columns,
@@ -302,10 +396,14 @@ def check_matched_tsvs_without_tone_info(
     print(f'yindian:  {YINDIAN_DATA_DIR}')
     print(f'检查声调列: {existing_tone_columns}')
     print('')
-    print(f'yindian TSV 总数: {summary["tsv_count"]}')
+    print(f'yindian TSV 总数: {summary["total_yindian_tsv_count"]}')
+    print(f'已排除 TSV 数: {summary["excluded_tsv_count"]}')
+    print(f'进入检查 TSV 数: {summary["checked_tsv_count"]}')
     print(f'get_tsvs 匹配成功 TSV 数: {summary["matched_tsv_count"]}')
     print(f'get_tsvs 匹配成功唯一简称数: {summary["unique_matched_shortname_count"]}')
     print(f'get_tsvs 匹配失败 TSV 数: {summary["match_failed_tsv_count"]}')
+    print(f'get_tsvs 匹配异常 TSV 数: {summary["match_error_tsv_count"]}')
+    print(f'匹配后排除 TSV 数: {summary["excluded_after_match_count"]}')
     print(f'音典档案中找不到简称: {summary["xlsx_missing_count"]}')
     print(f'匹配成功但没有声调信息: {summary["no_tone_count"]}')
 
@@ -321,6 +419,18 @@ def check_matched_tsvs_without_tone_info(
     #         lines.append(f'{index}. [MISS] {row["filename"]}')
     #         lines.append(f'   路径: {row["path"]}')
     #         lines.append('')
+
+    if match_error_tsv_rows:
+        lines.append('============================================================')
+        lines.append('【get_tsvs 匹配异常的 yindian TSV】')
+        lines.append('============================================================')
+        lines.append('')
+
+        for index, row in enumerate(match_error_tsv_rows, start=1):
+            lines.append(f'{index}. [ERROR] {row["filename"]}')
+            lines.append(f'   错误: {row.get("error", "")}')
+            lines.append(f'   路径: {row["path"]}')
+            lines.append('')
 
     if xlsx_missing_rows:
         lines.append('============================================================')
@@ -366,6 +476,7 @@ def check_matched_tsvs_without_tone_info(
 
     if lines:
         report_text = '\n'.join(lines)
+
         if use_pager:
             pydoc.pager(report_text)
         else:
@@ -378,6 +489,8 @@ def check_matched_tsvs_without_tone_info(
         'match_rows': match_rows,
         'matched_rows': matched_rows,
         'match_failed_tsv_rows': match_failed_tsv_rows,
+        'match_error_tsv_rows': match_error_tsv_rows,
+        'excluded_after_match_rows': excluded_after_match_rows,
         'xlsx_missing_rows': xlsx_missing_rows,
         'no_tone_rows': no_tone_rows,
     }
