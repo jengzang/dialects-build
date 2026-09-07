@@ -189,7 +189,7 @@ def _select_newest_claim(claims):
     return newest_claims[0]
 
 
-def resolve_global_claims(claims_by_path, prefer_paths=None, conflict_strategy='mtime'):
+def resolve_global_claims(claims_by_path, prefer_paths=None, conflict_strategy='step'):
     if conflict_strategy not in {'mtime', 'step'}:
         raise ValueError(
             f"未知 conflict_strategy: {conflict_strategy!r}, "
@@ -288,7 +288,7 @@ def resolve_global_claims(claims_by_path, prefer_paths=None, conflict_strategy='
     return resolution
 
 
-def match_paths_to_abbr(paths, query_db_path=None, prefer_paths=None, conflict_strategy='mtime'):
+def match_paths_to_abbr(paths, query_db_path=None, prefer_paths=None, conflict_strategy='step'):
     normalized_paths = [
         str(Path(path))
         for path in paths

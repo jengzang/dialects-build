@@ -383,7 +383,7 @@ def build_dialect_database(mode='admin'):
     return tsv_paths
 
 
-def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_path=None, match_resolution=None, conflict_strategy='mtime'):
+def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_path=None, match_resolution=None, conflict_strategy='step'):
     tsv_paths = [
         _normalize_path(path) if path != "_" else "_"
         for path in tsv_paths
@@ -1159,13 +1159,13 @@ def process_polyphonic_annotations_selective(db_path: str, 簡稱_list: list):
     print("✅ 多音字處理完成")
 
 
-def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, mode='admin', conflict_strategy='mtime'):
+def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, mode='admin', conflict_strategy='step'):
     """
     Args:
         mode: 'admin' 或 'user'
         append: 從 Excel 配置文件讀取待更新列表
         update: 從 UPDATE_DATA_DIR 目錄讀取所有 TSV 文件進行增量更新
-        conflict_strategy: 'mtime'（默認，較新的 TSV 勝出）或 'step'（按匹配 Step 優先級）
+        conflict_strategy: 'step'（默認，按匹配 Step 優先級；同級較新的 TSV 勝出）或 'mtime'（忽略 Step，直接較新 TSV 勝出）
     """
 
     # 記錄開始時間
