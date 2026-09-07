@@ -169,6 +169,26 @@ def _can_prefer_incoming_tie(claims, prefer_paths):
     return preferred_claims[0]
 
 
+def _select_newest_claim(claims):
+    timed_claims = []
+    for claim in claims:
+        try:
+            mtime_ns = Path(claim.path).stat().st_mtime_ns
+        except OSError:
+            return None
+        timed_claims.append((mtime_ns, claim))
+
+    newest_mtime = max(mtime_ns for mtime_ns, _claim in timed_claims)
+    newest_claims = [
+        claim for mtime_ns, claim in timed_claims
+        if mtime_ns == newest_mtime
+    ]
+    if len(newest_claims) != 1:
+        return None
+
+    return newest_claims[0]
+
+
 def resolve_global_claims(claims_by_path, prefer_paths=None):
     prefer_paths = {str(Path(path)) for path in (prefer_paths or set())}
     resolution = MatchResolution()
@@ -209,25 +229,26 @@ def resolve_global_claims(claims_by_path, prefer_paths=None):
             winner = best_claims[0]
         else:
             winner = _can_prefer_incoming_tie(best_claims, prefer_paths)
+            reason = 'incoming update replaces existing same-stem source'
             if winner is None:
-                resolution.ambiguous.append(
-                    AmbiguousMatch(
-                        abbr=abbr,
-                        claims=_sorted_claims(claims),
-                        reason='multiple same-priority claims for one abbreviation',
+                winner = _select_newest_claim(best_claims)
+                reason = 'newer same-priority claim won'
+                if winner is None:
+                    resolution.ambiguous.append(
+                        AmbiguousMatch(
+                            abbr=abbr,
+                            claims=_sorted_claims(claims),
+                            reason='multiple same-priority claims for one abbreviation',
+                        )
                     )
-                )
-                continue
+                    continue
 
         resolution.accepted[winner.path] = winner
         for claim in claims:
             if claim.path == winner.path:
                 continue
-            reason = (
-                'incoming update replaces existing same-stem source'
-                if claim.priority == winner.priority
-                else 'lower-priority claim lost'
-            )
+            if claim.priority != winner.priority:
+                reason = 'lower-priority claim lost'
             resolution.shadowed.append(
                 ShadowedMatch(loser=claim, winner=winner, reason=reason)
             )

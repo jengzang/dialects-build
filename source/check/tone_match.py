@@ -227,6 +227,7 @@ def _format_global_resolution_lines(resolution):
             lines.append(
                 f'   原因: 被 {item.winner.stage} 文件 {Path(item.winner.path).name} 覆盖'
             )
+            lines.append(f'   裁决: {item.reason}')
             lines.append(f'   路径: {item.loser.path}')
             lines.append('')
 

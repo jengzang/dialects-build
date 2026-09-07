@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -84,12 +85,37 @@ class MatchPathsToAbbrTests(unittest.TestCase):
             self.assertEqual(result.accepted[xiamen_path].abbr, "1883廈門")
             self.assertEqual(result.ambiguous, [])
 
-    def test_same_priority_variant_collision_is_ambiguous(self):
+    def test_same_priority_variant_collision_uses_newest_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "query.db"
             write_query_db(db_path, [("上猶群英", "客家話")])
             first_path = touch_tsv(tmpdir, "上犹羣英")
             second_path = touch_tsv(tmpdir, "上犹群英")
+            first_mtime = 1_700_000_000
+            second_mtime = 1_700_000_100
+            Path(first_path).touch()
+            Path(second_path).touch()
+            os.utime(first_path, (first_mtime, first_mtime))
+            os.utime(second_path, (second_mtime, second_mtime))
+
+            result = match_paths_to_abbr([first_path, second_path], query_db_path=str(db_path))
+
+            self.assertEqual(result.accepted[second_path].abbr, "上猶群英")
+            self.assertNotIn(first_path, result.accepted)
+            self.assertEqual(result.ambiguous, [])
+            self.assertEqual(result.shadowed[0].loser.path, first_path)
+            self.assertEqual(result.shadowed[0].winner.path, second_path)
+            self.assertEqual(result.shadowed[0].reason, "newer same-priority claim won")
+
+    def test_same_priority_variant_collision_stays_ambiguous_when_mtime_ties(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "query.db"
+            write_query_db(db_path, [("上猶群英", "客家話")])
+            first_path = touch_tsv(tmpdir, "上犹羣英")
+            second_path = touch_tsv(tmpdir, "上犹群英")
+            tied_mtime = 1_700_000_000
+            os.utime(first_path, (tied_mtime, tied_mtime))
+            os.utime(second_path, (tied_mtime, tied_mtime))
 
             result = match_paths_to_abbr([first_path, second_path], query_db_path=str(db_path))
 
