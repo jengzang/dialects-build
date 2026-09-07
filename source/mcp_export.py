@@ -124,14 +124,18 @@ def load_tar_member_bytes(commit, target_folder):
         return extracted
 
 
-def export_all_history_tables():
+def remote_ref(branch):
+    return f'origin/{branch}'
+
+
+def export_all_history_tables(branch='master'):
     ensure_mcp_cache()
 
-    print('📡 Fetching MCPDict latest commit for full history scan...')
-    run_git_command(['fetch', 'origin', 'master', '--quiet'], cwd=MCP_CACHE_DIR)
+    print(f'📡 Fetching MCPDict {branch} latest commit for full history scan...')
+    run_git_command(['fetch', 'origin', branch, '--quiet'], cwd=MCP_CACHE_DIR)
 
     log_output = run_git_command(
-        ['log', '--format=%H\t%ct', '--all', '--', MCP_TARGET_FOLDER],
+        ['log', '--format=%H\t%ct', remote_ref(branch), '--', MCP_TARGET_FOLDER],
         cwd=MCP_CACHE_DIR,
         capture_output=True,
     ).stdout
@@ -188,12 +192,12 @@ def export_all_history_tables():
     print(f'✨ All-history export done! files={len(history_map)} map={ALL_YINDIAN_MAP_FILE}')
 
 
-def export_mcp_tables(mode):
+def export_mcp_tables(mode, branch='master'):
     ensure_mcp_cache()
 
-    print('📡 Fetching MCPDict latest commit...')
-    run_git_command(['fetch', 'origin', 'master', '--quiet'], cwd=MCP_CACHE_DIR)
-    latest_commit = run_git_command(['rev-parse', 'origin/master'], cwd=MCP_CACHE_DIR, capture_output=True).stdout.strip()
+    print(f'📡 Fetching MCPDict {branch} latest commit...')
+    run_git_command(['fetch', 'origin', branch, '--quiet'], cwd=MCP_CACHE_DIR)
+    latest_commit = run_git_command(['rev-parse', remote_ref(branch)], cwd=MCP_CACHE_DIR, capture_output=True).stdout.strip()
 
     last_commit = load_last_commit()
 
@@ -276,9 +280,9 @@ def parse_sheet_history_page(html, sheet_path):
 
 
 
-def build_sheet_history_entries(sheet_path=MCP_SHEET_PATH):
+def build_sheet_history_entries(sheet_path=MCP_SHEET_PATH, branch='master'):
     encoded_path = urllib.parse.quote('/' + sheet_path)
-    next_url = f'{MCP_SOURCEFORGE_CODE_URL}/master/log/?path={encoded_path}'
+    next_url = f'{MCP_SOURCEFORGE_CODE_URL}/{branch}/log/?path={encoded_path}'
     commits = []
     seen = set()
 
@@ -323,8 +327,9 @@ def export_all_sheet_history(
     blob_loader: Optional[Callable[[str, str], bytes]] = None,
     target_dir: Optional[Path] = None,
     history_map_file: Optional[Path] = None,
+    branch: str = 'master',
 ):
-    history_entries = list(history_entries if history_entries is not None else build_sheet_history_entries())
+    history_entries = list(history_entries if history_entries is not None else build_sheet_history_entries(branch=branch))
     blob_loader = blob_loader or load_blob_bytes
     target_dir = target_dir or ALL_SHEET_DIR
     history_map_file = history_map_file or MCP_SHEET_HISTORY_MAP_FILE
@@ -352,14 +357,14 @@ def export_all_sheet_history(
     )
     print(f'✨ Sheet history export done! files={len(history_map)} map={history_map_file}')
 
-def export_mcp_assets(mode):
+def export_mcp_assets(mode, branch='master'):
     if mode in {'all', 'history', 'all-history', 'all_history'}:
-        return export_all_history_tables()
+        return export_all_history_tables(branch=branch)
 
     if mode in {'all_sheet', 'sheet-history', 'sheet_history'}:
-        return export_all_sheet_history()
+        return export_all_sheet_history(branch=branch)
 
     if mode in {'full', 'diff'}:
-        return export_mcp_tables(mode)
+        return export_mcp_tables(mode, branch=branch)
 
     raise ValueError(f'未知的 MCP export mode: {mode}')

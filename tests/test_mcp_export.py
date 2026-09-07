@@ -1,11 +1,45 @@
 import unittest
 from pathlib import Path
 import tempfile
+from unittest import mock
 
 from source import mcp_export
 
 
 class McpExportAllSheetTests(unittest.TestCase):
+    def test_export_mcp_tables_fetches_and_resolves_requested_branch(self):
+        command_results = {
+            ('rev-parse', 'origin/wip'): mock.Mock(stdout='abc123\n'),
+            ('ls-tree', '-r', '--name-only', 'abc123', '--', 'tools/tables/output'): mock.Mock(stdout=''),
+        }
+
+        def fake_run_git_command(args, **kwargs):
+            return command_results.get(tuple(args), mock.Mock(stdout=''))
+
+        with (
+            mock.patch('source.mcp_export.ensure_mcp_cache'),
+            mock.patch('source.mcp_export.run_git_command', side_effect=fake_run_git_command) as run_git,
+            mock.patch('source.mcp_export.load_last_commit', return_value=None),
+            mock.patch('source.mcp_export.has_exported_tsv_files', return_value=True),
+        ):
+            mcp_export.export_mcp_tables('full', branch='wip')
+
+        run_git.assert_any_call(['fetch', 'origin', 'wip', '--quiet'], cwd=mcp_export.MCP_CACHE_DIR)
+        run_git.assert_any_call(['rev-parse', 'origin/wip'], cwd=mcp_export.MCP_CACHE_DIR, capture_output=True)
+
+    def test_build_sheet_history_entries_uses_requested_branch_in_first_page(self):
+        seen_urls = []
+
+        def fake_run_curl_text(url):
+            seen_urls.append(url)
+            return ''
+
+        with mock.patch('source.mcp_export.run_curl_text', side_effect=fake_run_curl_text):
+            entries = mcp_export.build_sheet_history_entries(branch='wip')
+
+        self.assertEqual(entries, [])
+        self.assertIn('/wip/log/', seen_urls[0])
+
     def test_export_all_sheet_history_writes_timestamped_xlsx_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             target_dir = Path(tmpdir) / 'all_sheet'

@@ -20,13 +20,14 @@ class SmartFormatter(
 def main(args):
     args.type = args.type or []
     args.check = args.check or []
+    mcp_branch = getattr(args, 'mcp_branch', 'master')
 
     # deny 依赖 sheet；允许用户直接写 -c deny
     if 'deny' in args.check and 'sheet' not in args.check:
         args.check.insert(0, 'sheet')
 
     if args.mcp_mode:
-        export_mcp_assets(args.mcp_mode)
+        export_mcp_assets(args.mcp_mode, branch=mcp_branch)
 
         # 单独使用 -m 时，只拉取音典数据，不继续写库或检查
         if not args.type and not args.check:
@@ -134,8 +135,7 @@ def main(args):
         process_phonology_excel()
 
 
-# === 命令列參數設定 ===
-if __name__ == "__main__":
+def create_parser():
     parser = argparse.ArgumentParser(
         prog="build.py",
         description="📘 字表预处理工具：支持音典数据拉取、字表转换、数据库写入与数据检查。",
@@ -144,6 +144,7 @@ if __name__ == "__main__":
         示例:
           python build.py
           python build.py -m full
+          python build.py -m diff --branch wip
           python build.py -m diff -t update
           python build.py -t convert chars query
           python build.py -c sheet
@@ -181,6 +182,14 @@ if __name__ == "__main__":
           单独使用 -m 时，只拉取数据，不写库；
           若同时传入 -t 或 -c，则拉取完成后继续执行对应流程。
         """)
+    )
+    pull_group.add_argument(
+        '--branch',
+        dest='mcp_branch',
+        choices=['master', 'wip'],
+        default='master',
+        metavar='BRANCH',
+        help='指定 MCPDict 拉取分支：master 或 wip'
     )
 
     # 要執行的處理功能（可多選）
@@ -243,6 +252,12 @@ if __name__ == "__main__":
         """)
     )
 
+    return parser
+
+
+# === 命令列參數設定 ===
+if __name__ == "__main__":
+    parser = create_parser()
     args = parser.parse_args()
 
     # 让 python build.py -c 等价于 python build.py -c sheet
