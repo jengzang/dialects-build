@@ -189,7 +189,13 @@ def _select_newest_claim(claims):
     return newest_claims[0]
 
 
-def resolve_global_claims(claims_by_path, prefer_paths=None):
+def resolve_global_claims(claims_by_path, prefer_paths=None, conflict_strategy='mtime'):
+    if conflict_strategy not in {'mtime', 'step'}:
+        raise ValueError(
+            f"未知 conflict_strategy: {conflict_strategy!r}, "
+            "應為 'mtime' 或 'step'"
+        )
+
     prefer_paths = {str(Path(path)) for path in (prefer_paths or set())}
     resolution = MatchResolution()
     path_ambiguous_paths = set()
@@ -221,36 +227,59 @@ def resolve_global_claims(claims_by_path, prefer_paths=None):
         if not claims:
             continue
 
-        claims = sorted(claims, key=lambda claim: (claim.priority, claim.path))
-        best_priority = min(claim.priority for claim in claims)
-        best_claims = [claim for claim in claims if claim.priority == best_priority]
-
-        if len(best_claims) == 1:
-            winner = best_claims[0]
-        else:
-            winner = _can_prefer_incoming_tie(best_claims, prefer_paths)
-            reason = 'incoming update replaces existing same-stem source'
+        if conflict_strategy == 'mtime':
+            # 默認策略：忽略匹配 Step 優先級，所有候選直接按文件修改時間裁決。
+            winner = _select_newest_claim(claims)
             if winner is None:
-                winner = _select_newest_claim(best_claims)
-                reason = 'newer same-priority claim won'
-                if winner is None:
-                    resolution.ambiguous.append(
-                        AmbiguousMatch(
-                            abbr=abbr,
-                            claims=_sorted_claims(claims),
-                            reason='multiple same-priority claims for one abbreviation',
-                        )
+                resolution.ambiguous.append(
+                    AmbiguousMatch(
+                        abbr=abbr,
+                        claims=_sorted_claims(claims),
+                        reason='multiple claims have identical or unavailable mtime',
                     )
-                    continue
+                )
+                continue
+            winner_reason = 'newer file won'
+
+        else:  # conflict_strategy == 'step'
+            # 舊策略：先按匹配 Step 優先級裁決；同優先級再按既有規則/mtime 裁決。
+            claims = sorted(claims, key=lambda claim: (claim.priority, claim.path))
+            best_priority = min(claim.priority for claim in claims)
+            best_claims = [claim for claim in claims if claim.priority == best_priority]
+
+            if len(best_claims) == 1:
+                winner = best_claims[0]
+                winner_reason = 'higher-priority claim won'
+            else:
+                winner = _can_prefer_incoming_tie(best_claims, prefer_paths)
+                winner_reason = 'incoming update replaces existing same-stem source'
+                if winner is None:
+                    winner = _select_newest_claim(best_claims)
+                    winner_reason = 'newer same-priority claim won'
+                    if winner is None:
+                        resolution.ambiguous.append(
+                            AmbiguousMatch(
+                                abbr=abbr,
+                                claims=_sorted_claims(claims),
+                                reason='multiple same-priority claims for one abbreviation',
+                            )
+                        )
+                        continue
 
         resolution.accepted[winner.path] = winner
         for claim in claims:
             if claim.path == winner.path:
                 continue
-            if claim.priority != winner.priority:
-                reason = 'lower-priority claim lost'
+
+            if conflict_strategy == 'mtime':
+                shadow_reason = 'older file lost'
+            elif claim.priority != winner.priority:
+                shadow_reason = 'lower-priority claim lost'
+            else:
+                shadow_reason = winner_reason
+
             resolution.shadowed.append(
-                ShadowedMatch(loser=claim, winner=winner, reason=reason)
+                ShadowedMatch(loser=claim, winner=winner, reason=shadow_reason)
             )
 
     resolution.unmatched = sorted(resolution.unmatched)
@@ -259,7 +288,7 @@ def resolve_global_claims(claims_by_path, prefer_paths=None):
     return resolution
 
 
-def match_paths_to_abbr(paths, query_db_path=None, prefer_paths=None):
+def match_paths_to_abbr(paths, query_db_path=None, prefer_paths=None, conflict_strategy='mtime'):
     normalized_paths = [
         str(Path(path))
         for path in paths
@@ -270,7 +299,11 @@ def match_paths_to_abbr(paths, query_db_path=None, prefer_paths=None):
         path: classify_path_match(path, sort_order_abbr, partition_map)
         for path in normalized_paths
     }
-    return resolve_global_claims(claims_by_path, prefer_paths=prefer_paths)
+    return resolve_global_claims(
+        claims_by_path,
+        prefer_paths=prefer_paths,
+        conflict_strategy=conflict_strategy,
+    )
 
 
 # # 建立雙向映射
@@ -280,7 +313,12 @@ def match_paths_to_abbr(paths, query_db_path=None, prefer_paths=None):
 #     custom_variant_bidict[v] = k
 
 
-def get_tsvs(output_dir=PROCESSED_DATA_DIR, partition_name='全部', single=None, query_db_path=None):
+def get_tsvs(output_dir=PROCESSED_DATA_DIR, 
+             partition_name='全部', 
+             single=None, 
+             query_db_path=None,
+             conflict_strategy='mtime',
+):
     def resolve_single_strict_match(loc, sort_order_abbr):
         if not isinstance(loc, str) or not loc:
             return None
@@ -376,10 +414,32 @@ def get_tsvs(output_dir=PROCESSED_DATA_DIR, partition_name='全部', single=None
 
     matched_abbr_to_path = {}  # abbr -> tsv_path
 
+    def record_match(abbr, path):  
+        old_path = matched_abbr_to_path.get(abbr)
+
+        if old_path is None:
+            matched_abbr_to_path[abbr] = path
+            return
+
+        if conflict_strategy == 'mtime':
+            if os.path.getmtime(path) > os.path.getmtime(old_path):
+                matched_abbr_to_path[abbr] = path
+
+        elif conflict_strategy == 'step':
+            # 保持目前 get_tsvs 的行为：
+            # 後處理到的匹配覆蓋前面的匹配
+            matched_abbr_to_path[abbr] = path
+
+        else:
+            raise ValueError(
+                f"未知 conflict_strategy: {conflict_strategy!r}, "
+                "應為 'mtime' 或 'step'"
+            )
+
     # Step 1: 匹配原始名稱
     for loc in original_locations:
         if loc in sort_order_abbr:
-            matched_abbr_to_path[loc] = name_to_path[loc]  # 立刻將路徑對應
+            record_match(loc, name_to_path[loc])
             # print(f"Step1 匹配：{loc} -> 簡簿 => {name_to_path[loc]}")
         else:
             unmatched_locations_step1.append(loc)
@@ -397,7 +457,7 @@ def get_tsvs(output_dir=PROCESSED_DATA_DIR, partition_name='全部', single=None
             continue
         for abbr, abbr_trad in zip(sort_order_abbr, sort_order_abbr_trad):
             if loc == abbr_trad:
-                matched_abbr_to_path[abbr] = name_to_path[loc]  # 使用原始檔名對應到簡稱
+                record_match(abbr, name_to_path[loc])
                 # print(f"Step2 匹配：{abbr} -> 簡轉繁 => {loc} => {name_to_path[loc]}")  # ✅
                 break
         else:
@@ -417,7 +477,7 @@ def get_tsvs(output_dir=PROCESSED_DATA_DIR, partition_name='全部', single=None
         loc_simp = converter_t2s.convert(loc)
         for abbr, abbr_simp in zip(sort_order_abbr, sort_order_abbr_simp):
             if loc_simp == abbr_simp:
-                matched_abbr_to_path[abbr] = name_to_path[loc]  # 使用原始檔名對應到簡稱
+                record_match(abbr, name_to_path[loc])
                 # print(f"Step3 匹配：{loc}(轉簡體) -> 簡簿(轉簡體) => {abbr} => {name_to_path[loc]}")  # ✅
                 break
         else:
@@ -438,7 +498,7 @@ def get_tsvs(output_dir=PROCESSED_DATA_DIR, partition_name='全部', single=None
         loc_var = converter_variant.convert(loc)
         if loc_var in abbr_variant_map:
             abbr = abbr_variant_map[loc_var]
-            matched_abbr_to_path[abbr] = name_to_path[loc]
+            record_match(abbr, name_to_path[loc])
             # print(f"Step4 匹配：{loc}(異體簡化為 {loc_var}) -> 簡簿(異體簡化) => {abbr} => {name_to_path[loc]}")
         else:
             unmatched_locations_step4.append(loc)
@@ -458,7 +518,7 @@ def get_tsvs(output_dir=PROCESSED_DATA_DIR, partition_name='全部', single=None
         loc_custom = apply_custom_variant(loc)
         if loc_custom in abbr_custom_map:
             abbr = abbr_custom_map[loc_custom]
-            matched_abbr_to_path[abbr] = name_to_path[loc]
+            record_match(abbr, name_to_path[loc])
             # print(f"Step5 匹配：{loc}(自定義轉為 {loc_custom}) -> 簡簿(自定義) => {abbr} => {name_to_path[loc]}")
         else:
             unmatched_locations.append(loc)

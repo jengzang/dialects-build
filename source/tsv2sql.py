@@ -383,7 +383,7 @@ def build_dialect_database(mode='admin'):
     return tsv_paths
 
 
-def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_path=None, match_resolution=None):
+def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_path=None, match_resolution=None, conflict_strategy='mtime'):
     tsv_paths = [
         _normalize_path(path) if path != "_" else "_"
         for path in tsv_paths
@@ -398,7 +398,11 @@ def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_pat
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
 
-    resolution = match_resolution or match_paths_to_abbr(tsv_paths, query_db_path=query_db_path)
+    resolution = match_resolution or match_paths_to_abbr(
+        tsv_paths,
+        query_db_path=query_db_path,
+        conflict_strategy=conflict_strategy,
+    )
     decision_log_path = write_match_decision_log(
         resolution,
         query_db_path=query_db_path,
@@ -489,8 +493,10 @@ def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_pat
             if path in shadowed_by_path:
                 shadowed = shadowed_by_path[path]
                 print(
-                    f"\n [{idx}/{len(tsv_paths)}] [跳過] 被更高優先級文件覆蓋："
-                    f"{os.path.basename(path)} -> {shadowed.loser.abbr}"
+                    f"\n [{idx}/{len(tsv_paths)}] [跳過] 未被採用："
+                    f"{os.path.basename(shadowed.loser.path)} "
+                    f"-> 採用 {os.path.basename(shadowed.winner.path)} "
+                    f"({shadowed.loser.abbr}; {shadowed.reason})"
                 )
             elif path in unmatched_paths:
                 print(f"\n [{idx}/{len(tsv_paths)}] [跳過] 無法匹配簡稱：{os.path.basename(path)}")
@@ -1153,12 +1159,13 @@ def process_polyphonic_annotations_selective(db_path: str, 簡稱_list: list):
     print("✅ 多音字處理完成")
 
 
-def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, mode='admin'):
+def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, mode='admin', conflict_strategy='mtime'):
     """
     Args:
         mode: 'admin' 或 'user'
         append: 從 Excel 配置文件讀取待更新列表
         update: 從 UPDATE_DATA_DIR 目錄讀取所有 TSV 文件進行增量更新
+        conflict_strategy: 'mtime'（默認，較新的 TSV 勝出）或 'step'（按匹配 Step 優先級）
     """
 
     # 記錄開始時間
@@ -1198,6 +1205,7 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
                 guard_tsv_paths,
                 query_db_path=query_db_path,
                 prefer_paths={_normalize_path(path) for path in incoming_tsv_paths},
+                conflict_strategy=conflict_strategy,
             ),
             incoming_tsv_paths,
         )
@@ -1225,6 +1233,7 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
         update,
         query_db_path=query_db_path,
         match_resolution=match_resolution,
+        conflict_strategy=conflict_strategy,
     )
     step_times['步驟2：寫入方言數據'] = time.time() - step2_start
 
