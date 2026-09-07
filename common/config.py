@@ -48,6 +48,7 @@ MULCODECHAR_PATH = os.path.join(BASE_DIR, "data", "dependency", "mulcodechar.dt"
 MISSING_DATA_LOG = os.path.join(BASE_DIR, "logs", "缺資料.txt")
 WRITE_INFO_LOG = os.path.join(BASE_DIR, "logs", "write.txt")
 WRITE_ERROR_LOG = os.path.join(BASE_DIR, "logs", "write_error.txt")
+MATCH_DECISION_LOG = os.path.join(BASE_DIR, "logs", "match_decisions.txt")
 
 # Admin 模式數據庫路徑
 QUERY_DB_ADMIN_PATH = os.path.join(BASE_DIR, "data", "query_admin.db")
@@ -60,4 +61,3 @@ DIALECTS_DB_USER_PATH = os.path.join(BASE_DIR, "data", "dialects_user.db")
 # 保持向後兼容（默認指向 admin）
 QUERY_DB_PATH = QUERY_DB_ADMIN_PATH
 DIALECTS_DB_PATH = DIALECTS_DB_ADMIN_PATH
-

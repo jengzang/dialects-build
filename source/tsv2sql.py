@@ -5,6 +5,7 @@ from pathlib import Path
 import traceback
 import time
 import sys
+from datetime import datetime
 
 import pandas as pd
 
@@ -25,17 +26,17 @@ from common.wenbai_rules import (
 from source.change_coordinates import GPSUtil
 from common.config import (HAN_PATH, APPEND_PATH, QUERY_DB_PATH, DIALECTS_DB_PATH, CHARACTERS_DB_PATH, \
                            MISSING_DATA_LOG, WRITE_INFO_LOG, YINDIAN_DATA_DIR, UPDATE_DATA_DIR, QUERY_DB_ADMIN_PATH,
-                           QUERY_DB_USER_PATH, DIALECTS_DB_ADMIN_PATH, DIALECTS_DB_USER_PATH)
+                           QUERY_DB_USER_PATH, DIALECTS_DB_ADMIN_PATH, DIALECTS_DB_USER_PATH, MATCH_DECISION_LOG)
 from source.character_table_specs import (
     ADDITIONAL_CHARACTER_TABLE_SPECS,
     LEGACY_CHARACTER_TABLE_NAMES,
     PHONOLOGY_TABLE_SPEC,
 )
 from common.han_metadata import load_han_metadata
-from source.match_fromdb import scan_tsv_with_conflict_resolution
+from source.match_fromdb import MatchResolution, match_paths_to_abbr, scan_tsv_with_conflict_resolution
 from common.s2t import simplified2traditional, traditional2simplified
 from source.get_new import extract_all_from_files
-from source.match_fromdb import get_tsvs
+
 
 
 def apply_polyphonic_labels(merged_df, group_columns):
@@ -49,6 +50,91 @@ def apply_polyphonic_labels(merged_df, group_columns):
     fill_mask = is_polyphonic & ~has_wenbai_mark & (result['多音字'].fillna('').astype(str).str.strip() == '')
     result.loc[fill_mask, '多音字'] = '1'
     return result
+
+
+def _normalize_path(path):
+    return str(Path(path))
+
+
+def _format_claim(claim):
+    return f"{claim.path} | {claim.stage} | {claim.abbr}"
+
+
+def write_match_decision_log(resolution, query_db_path=None, db_path=None, log_path=MATCH_DECISION_LOG):
+    log_dir = os.path.dirname(log_path)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    lines = [
+        f"# Match decisions generated at {datetime.now().isoformat(timespec='seconds')}",
+        f"# query_db: {query_db_path or ''}",
+        f"# db_path: {db_path or ''}",
+        "",
+    ]
+
+    if resolution.shadowed:
+        lines.append("[SHADOWED]")
+        for item in sorted(
+            resolution.shadowed,
+            key=lambda shadowed: (shadowed.loser.abbr, shadowed.loser.priority, shadowed.loser.path),
+        ):
+            lines.extend([
+                f"loser_path: {item.loser.path}",
+                f"loser_stage: {item.loser.stage}",
+                f"abbr: {item.loser.abbr}",
+                f"winner_path: {item.winner.path}",
+                f"winner_stage: {item.winner.stage}",
+                f"reason: {item.reason}",
+                "",
+            ])
+
+    if resolution.ambiguous:
+        lines.append("[AMBIGUOUS]")
+        for item in sorted(resolution.ambiguous, key=lambda ambiguous: ambiguous.abbr):
+            lines.append(f"abbr: {item.abbr}")
+            lines.append(f"reason: {item.reason}")
+            for claim in sorted(item.claims, key=lambda claim: (claim.priority, claim.path, claim.abbr)):
+                lines.append(f"candidate: {_format_claim(claim)}")
+            lines.append("")
+
+    if resolution.unmatched:
+        lines.append("[UNMATCHED]")
+        for path in sorted(resolution.unmatched):
+            lines.append(f"path: {path}")
+        lines.append("")
+
+    if not resolution.shadowed and not resolution.ambiguous and not resolution.unmatched:
+        lines.append("[OK]")
+        lines.append("No shadowed, ambiguous, or unmatched TSV paths.")
+        lines.append("")
+
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    return log_path
+
+
+def _limit_resolution_to_paths(resolution, paths):
+    path_set = {_normalize_path(path) for path in paths}
+    return MatchResolution(
+        accepted={
+            path: claim
+            for path, claim in resolution.accepted.items()
+            if path in path_set
+        },
+        shadowed=[
+            item for item in resolution.shadowed
+            if item.loser.path in path_set
+        ],
+        ambiguous=[
+            item for item in resolution.ambiguous
+            if any(claim.path in path_set for claim in item.claims)
+        ],
+        unmatched=[
+            path for path in resolution.unmatched
+            if path in path_set
+        ],
+    )
 
 
 def build_dialect_database(mode='admin'):
@@ -297,14 +383,41 @@ def build_dialect_database(mode='admin'):
     return tsv_paths
 
 
-def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_path=None):
+def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_path=None, match_resolution=None):
+    tsv_paths = [
+        _normalize_path(path) if path != "_" else "_"
+        for path in tsv_paths
+    ]
+
     log_dirs = {
         os.path.dirname(MISSING_DATA_LOG),
         os.path.dirname(WRITE_INFO_LOG),
+        os.path.dirname(MATCH_DECISION_LOG),
     }
     for log_dir in log_dirs:
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
+
+    resolution = match_resolution or match_paths_to_abbr(tsv_paths, query_db_path=query_db_path)
+    decision_log_path = write_match_decision_log(
+        resolution,
+        query_db_path=query_db_path,
+        db_path=db_path,
+    )
+    if resolution.shadowed or resolution.unmatched or resolution.ambiguous:
+        print(
+            f"📋 TSV 匹配裁決：accepted={len(resolution.accepted)}, "
+            f"shadowed={len(resolution.shadowed)}, "
+            f"ambiguous={len(resolution.ambiguous)}, "
+            f"unmatched={len(resolution.unmatched)}"
+        )
+        print(f"   詳細記錄：{decision_log_path}")
+
+    if resolution.ambiguous:
+        raise SystemExit(
+            f"中止執行：發現 {len(resolution.ambiguous)} 組 TSV -> 簡稱歧義，"
+            f"請先查看 {decision_log_path}"
+        )
 
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -334,6 +447,8 @@ def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_pat
     update_簡稱_list = []  # Track which 簡稱 to update
     processed_簡稱 = []  # Track which 簡稱 were actually processed
     missing_data_logs = []  # 🚀 优化：批量收集缺失数据日志
+    shadowed_by_path = {item.loser.path: item for item in resolution.shadowed}
+    unmatched_paths = set(resolution.unmatched)
 
     def clean_join(series):
         return ", ".join(x.strip() for x in series.dropna().astype(str).unique() if x and x.strip())
@@ -351,14 +466,9 @@ def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_pat
         # NEW: For update mode, extract 簡稱 from TSV filenames
         print(f"📌 update 模式：正在提取待更新的方言點...")
         for path in tsv_paths:
-            try:
-                tsv_result = get_tsvs(single=path, query_db_path=query_db_path)
-                if tsv_result and len(tsv_result) >= 2 and tsv_result[1]:
-                    tsv_name = tsv_result[1][0]
-                    if tsv_name not in update_簡稱_list:
-                        update_簡稱_list.append(tsv_name)
-            except:
-                continue
+            claim = resolution.accepted.get(path)
+            if claim and claim.abbr not in update_簡稱_list:
+                update_簡稱_list.append(claim.abbr)
 
         print(f"📌 update 模式：將更新 {len(update_簡稱_list)} 個方言點")
         print(f"   簡稱列表: {update_簡稱_list}")
@@ -374,25 +484,27 @@ def process_all2sql(tsv_paths, db_path, append=False, update=False, query_db_pat
         if path == "_":
             continue
 
-        # 獲取 TSV 文件的簡稱
-        try:
-            tsv_result = get_tsvs(single=path, query_db_path=query_db_path)
-            if tsv_result is None or len(tsv_result) < 2 or not tsv_result[1]:
-                # 無法匹配簡稱，跳過該文件
+        claim = resolution.accepted.get(path)
+        if claim is None:
+            if path in shadowed_by_path:
+                shadowed = shadowed_by_path[path]
+                print(
+                    f"\n [{idx}/{len(tsv_paths)}] [跳過] 被更高優先級文件覆蓋："
+                    f"{os.path.basename(path)} -> {shadowed.loser.abbr}"
+                )
+            elif path in unmatched_paths:
                 print(f"\n [{idx}/{len(tsv_paths)}] [跳過] 無法匹配簡稱：{os.path.basename(path)}")
-                continue
-            tsv_name = tsv_result[1][0]
-        except (IndexError, TypeError) as e:
-            # 無法匹配簡稱，跳過該文件
-            print(f"\n [{idx}/{len(tsv_paths)}] [跳過] 無法匹配簡稱：{os.path.basename(path)}")
+            else:
+                print(f"\n [{idx}/{len(tsv_paths)}] [跳過] 不在本次寫入裁決中：{os.path.basename(path)}")
             continue
+        tsv_name = claim.abbr
 
         now_process = f"\n [{idx}/{len(tsv_paths)}] 正在處理：{tsv_name}"
         print(now_process)
         missing_data_logs.append(now_process)  # 🚀 优化：收集日志，稍后批量写入
 
-        # 如果 append 为 True，则进行筛选 (update mode processes all files)
-        if append and update_簡稱_list and tsv_name not in update_簡稱_list:
+        # append 模式只允許寫入 Excel 中待更新的簡稱；空清單時不寫任何 TSV。
+        if append and tsv_name not in update_簡稱_list:
             print(f"跳過：{tsv_name} (不在待更新清單中)")
             continue
 
@@ -1066,15 +1178,30 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
     print(f"步驟1：構建方言查詢數據庫（{mode} 模式）...")
     print(f"{'=' * 60}")
     step1_start = time.time()
-    tsv_paths = build_dialect_database(mode=mode)
+    existing_tsv_paths = build_dialect_database(mode=mode)
+    tsv_paths = existing_tsv_paths
     step_times['步驟1：構建方言查詢數據庫'] = time.time() - step1_start
 
     # 3. Override TSV paths if in update mode
+    match_resolution = None
     if update:
         print(f"\n{'=' * 60}")
         print(f"update 模式：使用 UPDATE_DATA_DIR 中的文件")
         print(f"{'=' * 60}")
-        tsv_paths = scan_update_directory()
+        incoming_tsv_paths = scan_update_directory()
+        guard_tsv_paths = [
+            *existing_tsv_paths,
+            *incoming_tsv_paths,
+        ]
+        match_resolution = _limit_resolution_to_paths(
+            match_paths_to_abbr(
+                guard_tsv_paths,
+                query_db_path=query_db_path,
+                prefer_paths={_normalize_path(path) for path in incoming_tsv_paths},
+            ),
+            incoming_tsv_paths,
+        )
+        tsv_paths = incoming_tsv_paths
 
     # 4. 過濾排除文件 (非 update 模式 且 非 admin 模式才過濾)
     if not update and mode != 'admin':
@@ -1091,7 +1218,14 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
     print(f"{'=' * 60}")
     step2_start = time.time()
     db_path = os.path.join(os.getcwd(), dialects_db_path)
-    processed_簡稱 = process_all2sql(tsv_paths, db_path, append, update, query_db_path=query_db_path)
+    processed_簡稱 = process_all2sql(
+        tsv_paths,
+        db_path,
+        append,
+        update,
+        query_db_path=query_db_path,
+        match_resolution=match_resolution,
+    )
     step_times['步驟2：寫入方言數據'] = time.time() - step2_start
 
     # 5. 處理重複行和多音字
@@ -1100,9 +1234,12 @@ def write_to_sql(yindian=None, write_chars_db=None, append=False, update=False, 
     print(f"{'=' * 60}")
     step3_start = time.time()
 
-    if update and processed_簡稱:
-        # Use selective processing for update mode (more efficient)
-        process_polyphonic_annotations_selective(dialects_db_path, processed_簡稱)
+    if update:
+        if processed_簡稱:
+            # Use selective processing for update mode (more efficient)
+            process_polyphonic_annotations_selective(dialects_db_path, processed_簡稱)
+        else:
+            print("⏭️  update 模式：沒有可寫入的方言點，跳過多音字處理")
     else:
         # Use full processing for normal/append mode
         process_polyphonic_annotations(dialects_db_path)

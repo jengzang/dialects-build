@@ -1,5 +1,7 @@
 import os
 import sqlite3
+from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import opencc
@@ -14,6 +16,242 @@ converter_t2s = opencc.OpenCC('t2s.json')
 converter_variant = opencc.OpenCC('tw2sp.json')
 
 
+MATCH_STAGES = [
+    ('exact', 0),
+    ('s2t_exact', 1),
+    ('t2s_exact', 2),
+    ('opencc_variant', 3),
+    ('custom_variant', 4),
+]
+
+
+@dataclass(frozen=True)
+class MatchClaim:
+    path: str
+    stem: str
+    abbr: str
+    partition: str
+    stage: str
+    priority: int
+    source: str
+
+
+@dataclass(frozen=True)
+class ShadowedMatch:
+    loser: MatchClaim
+    winner: MatchClaim
+    reason: str
+
+
+@dataclass(frozen=True)
+class AmbiguousMatch:
+    abbr: str
+    claims: tuple[MatchClaim, ...]
+    reason: str
+
+
+@dataclass
+class MatchResolution:
+    accepted: dict[str, MatchClaim] = field(default_factory=dict)
+    shadowed: list[ShadowedMatch] = field(default_factory=list)
+    ambiguous: list[AmbiguousMatch] = field(default_factory=list)
+    unmatched: list[str] = field(default_factory=list)
+
+
+def apply_custom_variant(text):
+    for old, new in custom_variant_dict.items():
+        text = text.replace(old, new)
+    return text
+
+
+def load_abbreviation_index(query_db_path=None):
+    db_path = query_db_path if query_db_path else QUERY_DB_PATH
+    with sqlite3.connect(db_path) as conn:
+        abbreviation_df = pd.read_sql_query("SELECT 簡稱, 音典分區 FROM dialects", conn)
+
+    duplicated_abbr = abbreviation_df[abbreviation_df.duplicated(subset=['簡稱'], keep=False)]
+    if not duplicated_abbr.empty:
+        print("[錯誤] 偵測到以下簡稱有重複，請處理後再執行：")
+        print(duplicated_abbr[['簡稱']].drop_duplicates())
+        raise SystemExit("中止執行：發現重複簡稱。")
+
+    abbr_partition_df = abbreviation_df.dropna(subset=["簡稱", "音典分區"])
+    sort_order_abbr = abbr_partition_df["簡稱"].tolist()
+    partition_raw = abbr_partition_df["音典分區"].tolist()
+    partition_map = {
+        name: (region.split('-')[0] if '-' in region else region)
+        for name, region in zip(sort_order_abbr, partition_raw)
+    }
+    return sort_order_abbr, partition_map
+
+
+def _path_source(path):
+    parent_name = Path(path).parent.name
+    return parent_name or ''
+
+
+def _make_claim(path, stem, abbr, partition_map, stage, priority):
+    return MatchClaim(
+        path=str(Path(path)),
+        stem=stem,
+        abbr=abbr,
+        partition=partition_map.get(abbr, ''),
+        stage=stage,
+        priority=priority,
+        source=_path_source(path),
+    )
+
+
+def classify_path_match(path, sort_order_abbr, partition_map):
+    path = str(Path(path))
+    stem = Path(path).stem
+    if not isinstance(stem, str) or not stem:
+        return []
+
+    exact_matches = [abbr for abbr in sort_order_abbr if abbr == stem]
+    if exact_matches:
+        return [
+            _make_claim(path, stem, abbr, partition_map, 'exact', 0)
+            for abbr in exact_matches
+        ]
+
+    stage_checks = [
+        (
+            's2t_exact',
+            1,
+            lambda loc, abbr: loc == converter_s2t.convert(abbr),
+        ),
+        (
+            't2s_exact',
+            2,
+            lambda loc, abbr: converter_t2s.convert(loc) == converter_t2s.convert(abbr),
+        ),
+        (
+            'opencc_variant',
+            3,
+            lambda loc, abbr: converter_variant.convert(loc) == converter_variant.convert(abbr),
+        ),
+        (
+            'custom_variant',
+            4,
+            lambda loc, abbr: apply_custom_variant(loc) == apply_custom_variant(abbr),
+        ),
+    ]
+
+    for stage, priority, predicate in stage_checks:
+        claims = [
+            _make_claim(path, stem, abbr, partition_map, stage, priority)
+            for abbr in sort_order_abbr
+            if isinstance(abbr, str) and abbr and predicate(stem, abbr)
+        ]
+        if claims:
+            return claims
+
+    return []
+
+
+def _sorted_claims(claims):
+    return tuple(sorted(claims, key=lambda claim: (claim.priority, claim.abbr, claim.path)))
+
+
+def _can_prefer_incoming_tie(claims, prefer_paths):
+    if not prefer_paths:
+        return None
+    if len({claim.stem for claim in claims}) != 1:
+        return None
+    if len({claim.abbr for claim in claims}) != 1:
+        return None
+
+    preferred_claims = [claim for claim in claims if claim.path in prefer_paths]
+    if len(preferred_claims) != 1:
+        return None
+
+    return preferred_claims[0]
+
+
+def resolve_global_claims(claims_by_path, prefer_paths=None):
+    prefer_paths = {str(Path(path)) for path in (prefer_paths or set())}
+    resolution = MatchResolution()
+    path_ambiguous_paths = set()
+    claims_by_abbr = defaultdict(list)
+
+    for path in sorted(claims_by_path):
+        claims = claims_by_path[path]
+        if not claims:
+            resolution.unmatched.append(path)
+            continue
+
+        best_priority = min(claim.priority for claim in claims)
+        best_claims = [claim for claim in claims if claim.priority == best_priority]
+        if len(best_claims) > 1:
+            resolution.ambiguous.append(
+                AmbiguousMatch(
+                    abbr=' / '.join(sorted({claim.abbr for claim in best_claims})),
+                    claims=_sorted_claims(best_claims),
+                    reason='single path matched multiple abbreviations at the same priority',
+                )
+            )
+            path_ambiguous_paths.add(path)
+            continue
+
+        claims_by_abbr[best_claims[0].abbr].append(best_claims[0])
+
+    for abbr in sorted(claims_by_abbr):
+        claims = [claim for claim in claims_by_abbr[abbr] if claim.path not in path_ambiguous_paths]
+        if not claims:
+            continue
+
+        claims = sorted(claims, key=lambda claim: (claim.priority, claim.path))
+        best_priority = min(claim.priority for claim in claims)
+        best_claims = [claim for claim in claims if claim.priority == best_priority]
+
+        if len(best_claims) == 1:
+            winner = best_claims[0]
+        else:
+            winner = _can_prefer_incoming_tie(best_claims, prefer_paths)
+            if winner is None:
+                resolution.ambiguous.append(
+                    AmbiguousMatch(
+                        abbr=abbr,
+                        claims=_sorted_claims(claims),
+                        reason='multiple same-priority claims for one abbreviation',
+                    )
+                )
+                continue
+
+        resolution.accepted[winner.path] = winner
+        for claim in claims:
+            if claim.path == winner.path:
+                continue
+            reason = (
+                'incoming update replaces existing same-stem source'
+                if claim.priority == winner.priority
+                else 'lower-priority claim lost'
+            )
+            resolution.shadowed.append(
+                ShadowedMatch(loser=claim, winner=winner, reason=reason)
+            )
+
+    resolution.unmatched = sorted(resolution.unmatched)
+    resolution.shadowed.sort(key=lambda item: (item.loser.abbr, item.loser.priority, item.loser.path))
+    resolution.ambiguous.sort(key=lambda item: (item.abbr, item.reason))
+    return resolution
+
+
+def match_paths_to_abbr(paths, query_db_path=None, prefer_paths=None):
+    normalized_paths = [
+        str(Path(path))
+        for path in paths
+        if path != "_"
+    ]
+    sort_order_abbr, partition_map = load_abbreviation_index(query_db_path=query_db_path)
+    claims_by_path = {
+        path: classify_path_match(path, sort_order_abbr, partition_map)
+        for path in normalized_paths
+    }
+    return resolve_global_claims(claims_by_path, prefer_paths=prefer_paths)
+
+
 # # 建立雙向映射
 # custom_variant_bidict = {}
 # for k, v in custom_variant_dict.items():
@@ -22,11 +260,6 @@ converter_variant = opencc.OpenCC('tw2sp.json')
 
 
 def get_tsvs(output_dir=PROCESSED_DATA_DIR, partition_name='全部', single=None, query_db_path=None):
-    def apply_custom_variant(text):
-        for old, new in custom_variant_dict.items():
-            text = text.replace(old, new)
-        return text
-
     def resolve_single_strict_match(loc, sort_order_abbr):
         if not isinstance(loc, str) or not loc:
             return None

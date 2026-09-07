@@ -3,7 +3,7 @@ import sqlite3
 import pydoc
 
 from common.config import PROCESSED_DATA_DIR, YINDIAN_DATA_DIR, QUERY_DB_PATH
-from source.match_fromdb import get_tsvs
+from source.match_fromdb import get_tsvs, match_paths_to_abbr
 
 
 def _iter_tsv_paths():
@@ -92,6 +92,48 @@ def _format_row_detail(row, index):
     return '\n'.join(lines)
 
 
+def _format_global_resolution(resolution):
+    lines = []
+
+    if resolution.shadowed:
+        lines.append('============================================================')
+        lines.append('【写库会跳过的 shadowed 文件】')
+        lines.append('============================================================')
+        lines.append('')
+        for index, item in enumerate(resolution.shadowed, start=1):
+            lines.append(f'{index}. {Path(item.loser.path).name} -> {item.loser.abbr}')
+            lines.append(
+                f'   原因: 被 {item.winner.stage} 文件 {Path(item.winner.path).name} 覆盖'
+            )
+            lines.append(f'   路徑: {item.loser.path}')
+            lines.append('')
+
+    if resolution.ambiguous:
+        lines.append('============================================================')
+        lines.append('【写库会中止的 ambiguous 简称】')
+        lines.append('============================================================')
+        lines.append('')
+        for index, item in enumerate(resolution.ambiguous, start=1):
+            lines.append(f'{index}. {item.abbr}')
+            lines.append(f'   原因: {item.reason}')
+            lines.append('   候选:')
+            for claim in item.claims:
+                lines.append(f'   - {Path(claim.path).name} {claim.stage}')
+            lines.append('')
+
+    if resolution.unmatched:
+        lines.append('============================================================')
+        lines.append('【写库无法匹配的文件】')
+        lines.append('============================================================')
+        lines.append('')
+        for index, path in enumerate(resolution.unmatched, start=1):
+            lines.append(f'{index}. {Path(path).name}')
+            lines.append(f'   路徑: {path}')
+            lines.append('')
+
+    return lines
+
+
 def run_match_check(query_db_path=QUERY_DB_PATH, show_output=True, use_pager=True):
     rows = []
     total = 0
@@ -108,7 +150,7 @@ def run_match_check(query_db_path=QUERY_DB_PATH, show_output=True, use_pager=Tru
     _emit(f'   query_db: {query_db_path}')
     _emit(f'   yindian:  {YINDIAN_DATA_DIR}')
     _emit(f'   processed:{PROCESSED_DATA_DIR}')
-    _emit('   說明: 直接調用 get_tsvs(single=...)，與最終寫庫匹配鏈路保持一致')
+    _emit('   說明: 前半段顯示 get_tsvs(single=...) 結果，末尾顯示寫庫全局裁決')
 
     ready, message = _check_query_db_ready(query_db_path)
     if not ready:
@@ -147,18 +189,25 @@ def run_match_check(query_db_path=QUERY_DB_PATH, show_output=True, use_pager=Tru
     _emit(f'未匹配 {len(miss_rows)} 個')
     _emit(f'需要關注 {len(display_rows)} 個')
 
-    if not display_rows:
+    global_resolution = match_paths_to_abbr(
+        [row['path'] for row in rows],
+        query_db_path=query_db_path,
+    )
+    global_lines = _format_global_resolution(global_resolution)
+
+    if not display_rows and not global_lines:
         _emit('\n✅ 所有已匹配文件的簡稱均完全一致，且沒有未匹配文件。')
         return rows
 
     lines = []
 
-    lines.append('【需要關注的文件】')
-    lines.append('')
-    lines.append(f'共 {len(display_rows)} 個')
-    lines.append(f'  - 簡稱不一致: {len(mismatch_rows)} 個')
-    lines.append(f'  - 未匹配: {len(miss_rows)} 個')
-    lines.append('')
+    if display_rows:
+        lines.append('【需要關注的文件】')
+        lines.append('')
+        lines.append(f'共 {len(display_rows)} 個')
+        lines.append(f'  - 簡稱不一致: {len(mismatch_rows)} 個')
+        lines.append(f'  - 未匹配: {len(miss_rows)} 個')
+        lines.append('')
 
     if mismatch_rows:
         lines.append('============================================================')
@@ -179,6 +228,9 @@ def run_match_check(query_db_path=QUERY_DB_PATH, show_output=True, use_pager=Tru
         for index, row in enumerate(miss_rows, start=1):
             lines.append(_format_row_detail(row, index))
             lines.append('')
+
+    if global_lines:
+        lines.extend(global_lines)
 
     if show_output:
         report_text = '\n'.join(lines)

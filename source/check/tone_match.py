@@ -7,7 +7,7 @@ import pandas as pd
 
 from common.config import HAN_PATH, YINDIAN_DATA_DIR, QUERY_DB_PATH
 from common.constants import exclude_files
-from source.match_fromdb import get_tsvs
+from source.match_fromdb import get_tsvs, match_paths_to_abbr
 from source.check.tone_check import load_tone_dataframe, TONE_INDEX_TO_LABEL
 
 
@@ -199,7 +199,8 @@ def collect_yindian_tsv_match_rows_by_get_tsvs(query_db_path=QUERY_DB_PATH):
     2. 不扫描 processed。
     3. 先排除 exclude_files。
     4. 不调用 source.check.match.run_match_check。
-    5. 但必须调用 get_tsvs(single=...)，保持和最终写库匹配链路一致。
+    5. 调用 get_tsvs(single=...) 保留逐檔诊断视角。
+    6. 最终声调统计再按 yindian 范围内的全局裁决过滤 shadowed/ambiguous。
     """
     rows = []
 
@@ -211,6 +212,38 @@ def collect_yindian_tsv_match_rows_by_get_tsvs(query_db_path=QUERY_DB_PATH):
         rows.append(row)
 
     return rows
+
+
+def _format_global_resolution_lines(resolution):
+    lines = []
+
+    if resolution.shadowed:
+        lines.append('============================================================')
+        lines.append('【yindian 范围内写库会跳过的 shadowed 文件】')
+        lines.append('============================================================')
+        lines.append('')
+        for index, item in enumerate(resolution.shadowed, start=1):
+            lines.append(f'{index}. {Path(item.loser.path).name} -> {item.loser.abbr}')
+            lines.append(
+                f'   原因: 被 {item.winner.stage} 文件 {Path(item.winner.path).name} 覆盖'
+            )
+            lines.append(f'   路径: {item.loser.path}')
+            lines.append('')
+
+    if resolution.ambiguous:
+        lines.append('============================================================')
+        lines.append('【yindian 范围内写库会中止的 ambiguous 简称】')
+        lines.append('============================================================')
+        lines.append('')
+        for index, item in enumerate(resolution.ambiguous, start=1):
+            lines.append(f'{index}. {item.abbr}')
+            lines.append(f'   原因: {item.reason}')
+            lines.append('   候选:')
+            for claim in item.claims:
+                lines.append(f'   - {Path(claim.path).name} {claim.stage}')
+            lines.append('')
+
+    return lines
 
 
 def check_matched_tsvs_without_tone_info(
@@ -228,8 +261,9 @@ def check_matched_tsvs_without_tone_info(
     2. 不扫描 processed。
     3. 先排除 exclude_files。
     4. 不调用 source.check.match.run_match_check。
-    5. 使用 get_tsvs(single=...) 做真实 TSV -> 最终简称匹配。
-    6. 只针对匹配成功 status == OK 的最终简称检查声调信息。
+    5. 使用 get_tsvs(single=...) 做逐檔 TSV -> 简称诊断。
+    6. 使用 match_paths_to_abbr 在 yindian 范围内模拟写库裁决。
+    7. 只针对 single 匹配成功且全局裁决 accepted 的简称检查声调信息。
     """
 
     ready, message = _check_query_db_ready(query_db_path)
@@ -247,6 +281,7 @@ def check_matched_tsvs_without_tone_info(
             'excluded_after_match_rows': [],
             'xlsx_missing_rows': [],
             'no_tone_rows': [],
+            'global_resolution': None,
         }
 
     workbook_df, workbook_map = _load_workbook_map(excel_path)
@@ -257,6 +292,11 @@ def check_matched_tsvs_without_tone_info(
     match_rows = collect_yindian_tsv_match_rows_by_get_tsvs(
         query_db_path=query_db_path,
     )
+    global_resolution = match_paths_to_abbr(
+        [row['path'] for row in match_rows],
+        query_db_path=query_db_path,
+    ) if match_rows else None
+    accepted_paths = set(global_resolution.accepted) if global_resolution else set()
 
     if not match_rows:
         print('\n❌ 無法執行聲調信息檢查：排除 exclude_files 后，没有任何 yindian TSV 文件进入检查。')
@@ -284,6 +324,7 @@ def check_matched_tsvs_without_tone_info(
             'excluded_after_match_rows': [],
             'xlsx_missing_rows': [],
             'no_tone_rows': [],
+            'global_resolution': None,
         }
 
     tone_columns = _get_tone_columns(
@@ -320,6 +361,7 @@ def check_matched_tsvs_without_tone_info(
             'excluded_after_match_rows': [],
             'xlsx_missing_rows': [],
             'no_tone_rows': [],
+            'global_resolution': global_resolution,
         }
 
     matched_rows = []
@@ -330,7 +372,7 @@ def check_matched_tsvs_without_tone_info(
     for row in match_rows:
         status = row.get('status')
 
-        if status == 'OK' and row.get('matched'):
+        if status == 'OK' and row.get('matched') and row.get('path') in accepted_paths:
             matched_rows.append(row)
         elif status == 'ERROR':
             match_error_tsv_rows.append(row)
@@ -347,8 +389,7 @@ def check_matched_tsvs_without_tone_info(
     xlsx_missing_rows = []
     no_tone_rows = []
 
-    # 关键：
-    # 这里只针对 get_tsvs 匹配成功的最终简称检查声调。
+    # 关键：这里只针对 single 匹配成功且全局裁决 accepted 的最终简称检查声调。
     for shortname, rows in sorted(matched_by_shortname.items()):
         workbook_row = workbook_map.get(shortname)
 
@@ -383,13 +424,15 @@ def check_matched_tsvs_without_tone_info(
         'match_failed_tsv_count': len(match_failed_tsv_rows),
         'match_error_tsv_count': len(match_error_tsv_rows),
         'excluded_after_match_count': len(excluded_after_match_rows),
+        'shadowed_tsv_count': len(global_resolution.shadowed) if global_resolution else 0,
+        'ambiguous_group_count': len(global_resolution.ambiguous) if global_resolution else 0,
         'xlsx_missing_count': len(xlsx_missing_rows),
         'no_tone_count': len(no_tone_rows),
         'existing_tone_columns': existing_tone_columns,
     }
 
     print('\n============================================================')
-    print('yindian TSV -> get_tsvs 匹配成功简称 -> 音典档案声调信息检查')
+    print('yindian TSV -> single 匹配 -> yindian 全局裁决 -> 音典档案声调信息检查')
     print('============================================================')
     print(f'query_db: {query_db_path}')
     print(f'excel:    {excel_path}')
@@ -404,10 +447,14 @@ def check_matched_tsvs_without_tone_info(
     print(f'get_tsvs 匹配失败 TSV 数: {summary["match_failed_tsv_count"]}')
     print(f'get_tsvs 匹配异常 TSV 数: {summary["match_error_tsv_count"]}')
     print(f'匹配后排除 TSV 数: {summary["excluded_after_match_count"]}')
+    print(f'yindian 全局裁决 shadowed TSV 数: {summary["shadowed_tsv_count"]}')
+    print(f'yindian 全局裁决 ambiguous 组数: {summary["ambiguous_group_count"]}')
     print(f'音典档案中找不到简称: {summary["xlsx_missing_count"]}')
     print(f'匹配成功但没有声调信息: {summary["no_tone_count"]}')
 
     lines = []
+    if global_resolution:
+        lines.extend(_format_global_resolution_lines(global_resolution))
 
     # if match_failed_tsv_rows:
     #     lines.append('============================================================')
@@ -493,4 +540,5 @@ def check_matched_tsvs_without_tone_info(
         'excluded_after_match_rows': excluded_after_match_rows,
         'xlsx_missing_rows': xlsx_missing_rows,
         'no_tone_rows': no_tone_rows,
+        'global_resolution': global_resolution,
     }
