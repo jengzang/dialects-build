@@ -31,6 +31,7 @@ from source.character_table_specs import (
     LEGACY_CHARACTER_TABLE_NAMES,
     PHONOLOGY_TABLE_SPEC,
 )
+from common.han_metadata import load_han_metadata
 from source.match_fromdb import scan_tsv_with_conflict_resolution
 from common.s2t import simplified2traditional, traditional2simplified
 from source.get_new import extract_all_from_files
@@ -108,12 +109,9 @@ def build_dialect_database(mode='admin'):
     df_other = df_other[[col for col in final_columns_filter if col in df_other.columns]].copy()
     df_other = df_other.rename(columns=rename_map)
 
-    # --- 讀取 漢字音典表 ---
+    # --- 讀取 漢字音典表（檔案 + 民國調查大系列檔案） ---
     print(f"⏳ 正在讀取並校驗 {han_file.name} ...")
-    # 跳過第 2 行（即 index 0）
-    df_han = pd.read_excel(han_file, sheet_name="檔案", header=0, engine='openpyxl', keep_default_na=False)
-    df_han = df_han.drop(index=0).reset_index(drop=True)
-    df_han.columns = df_han.columns.str.strip()  # 先去空格
+    df_han = load_han_metadata(han_file, keep_default_na=False)
 
     # 【執行校驗】
     validate_required_columns(df_han.columns, han_file.name)

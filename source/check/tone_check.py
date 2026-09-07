@@ -7,6 +7,7 @@ import pandas as pd
 
 from common.config import HAN_PATH, QUERY_DB_USER_PATH
 from common.search_tones import search_tones
+from common.han_metadata import load_han_metadata
 
 TONE_CHECK_JSON_PATH = Path("data/dependency/tone_value_overrides.json")
 WEIRD_TONE_NAME_PATTERN = re.compile(r"[^㐀-䶿一-鿿豈-﫿]")
@@ -37,7 +38,7 @@ def save_tone_overrides(overrides, json_path=TONE_CHECK_JSON_PATH):
 
 
 def load_tone_dataframe(excel_path=HAN_PATH):
-    df = pd.read_excel(excel_path, sheet_name='檔案', dtype=object).fillna('')
+    df = load_han_metadata(excel_path, dtype=object).fillna('')
     df.columns = [str(col).strip() for col in df.columns]
     df['簡稱'] = df['簡稱'].astype(str).str.strip()
     return df

@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 from common.config import HAN_PATH
+from common.han_metadata import load_han_metadata
 
 
 def normalize_coordinate_text(value):
@@ -18,7 +19,7 @@ def normalize_coordinate_text(value):
 
 
 def load_han_file_for_change_check(file_path):
-    df = pd.read_excel(file_path, sheet_name='檔案', dtype=object)
+    df = load_han_metadata(file_path, dtype=object)
     df.columns = [str(c).strip() for c in df.columns]
     missing_cols = [col for col in ['簡稱', '經緯度', '是否有人在做'] if col not in df.columns]
     if missing_cols:
