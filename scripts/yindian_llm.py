@@ -37,25 +37,25 @@ PROMPT = """你是汉语方言词汇整理者。请逐条独立分析输入数�
 
 任务：
 1. 判断这一行能否抽出一个或多个方言词；
-2. 为每个方言词提供现代标准汉语词候选；
+2. 为每个方言词提供一个最合适的现代标准汉语词；
 3. 给每个方言词一个 0 到 1 的置信度。
 
 重要规则：
 1. `~` 或 `～` 是音典注释中的占位符，表示本行的“原始汉字”，不是省略号，也不能忽略。
 2. 每出现一个占位符，都要把它替换成原始汉字，并保留它所在的完整词语或短语。注释中的 `~背脊` 且原始汉字为 `䂿` 时，方言词必须写成 `䂿背脊`，不能只输出 `䂿`。
 3. 真实案例：原始汉字为 `䂿`、原始注释为 `(白)砸、捶,~背脊,俗字撘` 时，至少返回
-   `{"方言词":"䂿背脊","标准词":["砸背脊","捶背脊"],"置信度":0.9}`。
+   `{"方言词":"䂿背脊","标准词":"捶背脊","置信度":0.9}`。
    如果同一行还明确说明原始汉字单独成词，可以另外返回单字词，但不能遗漏 `䂿背脊`。
 4. 括号中的“白”“文”“又”等是读法或用法标签，不是词语本身；“俗字、本字、字形”说明不是词条，除非同一行明确给出完整词语。
 5. 逗号、分号等可能分隔多个义项或词语。不要因为一个原始汉字可以解释为某个标准词，就丢掉注释中由占位符明确写出的更长方言词。
 6. 纯读音、文白读、又音或音韵说明，如果不能形成明确词语，返回空 entries。
 7. 不要猜测音标，不要输出音标；也不要凭空把注释中没有表达的文字拼成词。但按上述占位符规则还原出来的完整词语不是猜测，必须保留。
-8. 一行可以有多个方言词；一个方言词可以有多个标准词候选。标准词应与该完整方言词的意义对应。
+8. 一行可以有多个方言词，但一个方言词只能对应一个标准词。遇到多个可能解释时，选择最能对应完整方言词的主标准词；不要输出标准词数组。
 
 只返回 JSON 对象：
 {"results":[
   {"id":"输入id","entries":[
-    {"方言词":"...","标准词":["..."],"置信度":0.0}
+    {"方言词":"...","标准词":"...","置信度":0.0}
   ]}
 ]}
 没有明确词语时使用 "entries":[]。
@@ -83,6 +83,53 @@ ROW_SHEET_HEADERS = [
     "状态",
     "LLM结果",
 ]
+
+
+def _word_row(record: dict[str, Any], entry: dict[str, Any]) -> list[Any]:
+    return [
+        _standard_word(entry.get("标准词", "")),
+        entry["方言词"],
+        "",
+        record["原始注释"],
+        "",
+        entry["置信度"],
+        record["原始汉字"],
+        record["_原字音标"],
+        record["原始注释"],
+        record["来源文件"],
+        record["原始行号"],
+    ]
+
+
+def _word_row_rank(row: list[Any]) -> tuple[int, float]:
+    confidence = row[5]
+    if not isinstance(confidence, (int, float)):
+        confidence = 0
+    return int(bool(row[0])), float(confidence)
+
+
+def _deduplicate_word_rows(
+    rows: list[list[Any]],
+) -> tuple[list[list[Any]], list[list[Any]]]:
+    kept_by_word: dict[str, list[Any]] = {}
+    order: list[str] = []
+    duplicate_rows = []
+
+    for row in rows:
+        dialect_word = str(row[1]).strip()
+        if dialect_word not in kept_by_word:
+            kept_by_word[dialect_word] = row
+            order.append(dialect_word)
+            continue
+
+        kept_row = kept_by_word[dialect_word]
+        if _word_row_rank(row) > _word_row_rank(kept_row):
+            duplicate_rows.append(kept_row)
+            kept_by_word[dialect_word] = row
+        else:
+            duplicate_rows.append(row)
+
+    return [kept_by_word[word] for word in order], duplicate_rows
 
 
 def _load_api_key(
@@ -251,12 +298,18 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def _string_list(value: Any) -> list[str]:
+def _standard_word(value: Any) -> str:
     if isinstance(value, str):
-        return [value.strip()] if value.strip() else []
-    if not isinstance(value, list):
-        raise ValueError("标准词必须是字符串或数组")
-    return [str(item).strip() for item in value if str(item).strip()]
+        return value.strip()
+    if isinstance(value, list):
+        for item in value:
+            word = str(item).strip()
+            if word:
+                return word
+        return ""
+    if value is None:
+        return ""
+    raise ValueError("标准词必须是字符串")
 
 
 def _parse_json_content(content: str) -> Any:
@@ -304,7 +357,7 @@ def _validate_response(
             normalized_entries.append(
                 {
                     "方言词": dialect_word,
-                    "标准词": _string_list(entry.get("标准词", [])),
+                    "标准词": _standard_word(entry.get("标准词", "")),
                     "置信度": confidence,
                 }
             )
@@ -377,11 +430,25 @@ def _call_deepseek(
 
 
 def _load_done(result_path: Path) -> dict[str, dict[str, Any]]:
-    return {
-        record["id"]: record
-        for record in _read_jsonl(result_path)
-        if isinstance(record, dict) and record.get("id")
-    }
+    done = {}
+    for record in _read_jsonl(result_path):
+        if not isinstance(record, dict) or not record.get("id"):
+            continue
+        entries = record.get("entries")
+        if isinstance(entries, list):
+            normalized_entries = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                normalized_entries.append(
+                    {
+                        **entry,
+                        "标准词": _standard_word(entry.get("标准词", "")),
+                    }
+                )
+            record = {**record, "entries": normalized_entries}
+        done[record["id"]] = record
+    return done
 
 
 def _attach_input_fingerprints(
@@ -415,32 +482,27 @@ def _write_workbook(
     results: dict[str, dict[str, Any]],
     errors: dict[str, str],
     xlsx_path: Path,
-) -> None:
+) -> tuple[int, int]:
     workbook = Workbook()
     word_sheet = workbook.active
     word_sheet.title = "词表"
     word_sheet.append(WORD_SHEET_HEADERS)
 
+    candidate_rows = []
     for record in records:
         result = results.get(record["id"], {"entries": []})
         for entry in result.get("entries", []):
-            standards = entry.get("标准词", []) or [""]
-            for standard_word in standards:
-                word_sheet.append(
-                    [
-                        standard_word,
-                        entry["方言词"],
-                        "",
-                        record["原始注释"],
-                        "",
-                        entry["置信度"],
-                        record["原始汉字"],
-                        record["_原字音标"],
-                        record["原始注释"],
-                        record["来源文件"],
-                        record["原始行号"],
-                    ]
-                )
+            candidate_rows.append(_word_row(record, entry))
+
+    word_rows, duplicate_rows = _deduplicate_word_rows(candidate_rows)
+    for row in word_rows:
+        word_sheet.append(row)
+
+    if duplicate_rows:
+        duplicate_sheet = workbook.create_sheet("重复候选")
+        duplicate_sheet.append(WORD_SHEET_HEADERS)
+        for row in duplicate_rows:
+            duplicate_sheet.append(row)
 
     row_sheet = workbook.create_sheet("逐行结果")
     row_sheet.append(ROW_SHEET_HEADERS)
@@ -491,6 +553,7 @@ def _write_workbook(
 
     xlsx_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(xlsx_path)
+    return len(word_rows), len(duplicate_rows)
 
 
 def run_analysis(
@@ -621,7 +684,7 @@ def run_analysis(
             for record in public_records
             if record["id"] in all_results
         }
-        _write_workbook(
+        word_rows, duplicate_rows = _write_workbook(
             point,
             records,
             result_by_id,
@@ -638,9 +701,8 @@ def run_analysis(
             "batches": len(batches),
             "completed": len(all_results),
             "errors": len(errors),
-            "word_rows": sum(
-                len(result.get("entries", [])) for result in result_by_id.values()
-            ),
+            "word_rows": word_rows,
+            "duplicate_rows": duplicate_rows,
         }
 
     _write_text_atomic(

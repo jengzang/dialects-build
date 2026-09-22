@@ -45,8 +45,10 @@ class YindianLlmTests(unittest.TestCase):
         self.assertIn("`~` 或 `～` 是音典注释中的占位符", PROMPT)
         self.assertIn("䂿背脊", PROMPT)
         self.assertIn("不能只输出 `䂿`", PROMPT)
+        self.assertIn('"标准词":"捶背脊"', PROMPT)
         self.assertIn('"置信度":0.9', PROMPT)
         self.assertNotIn("不要把解释文字硬拼成方言词", PROMPT)
+        self.assertNotIn("一个方言词可以有多个标准词候选", PROMPT)
 
     def test_prompt_version_is_part_of_cached_result_fingerprint(self):
         record = {
@@ -119,9 +121,9 @@ class YindianLlmTests(unittest.TestCase):
                             "entries": [
                                 {
                                     "方言词": "方" + item["原始汉字"],
-                                    "标准词": ["标准一", "标准二"]
+                                    "标准词": "标准一"
                                     if item["原始汉字"] == "□"
-                                    else [],
+                                    else "",
                                     "置信度": 0.8,
                                 }
                             ]
@@ -169,10 +171,9 @@ class YindianLlmTests(unittest.TestCase):
                 ],
             )
             rows = list(sheet.iter_rows(min_row=2, values_only=True))
-            self.assertEqual(len(rows), 3)
+            self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0][0:6], ("标准一", "方□", None, "~腰:脊背微駝", None, 0.8))
-            self.assertEqual(rows[1][0:2], ("标准二", "方□"))
-            self.assertEqual(rows[2][0:2], (None, "方二"))
+            self.assertEqual(rows[1][0:2], (None, "方二"))
             self.assertEqual(rows[0][7], "ka1")
 
             row_sheet = workbook["逐行结果"]
@@ -198,6 +199,171 @@ class YindianLlmTests(unittest.TestCase):
             first_result = json.loads(result_lines[0])
             self.assertEqual(first_result["id"], "甲地.tsv:2")
             self.assertRegex(first_result["input_fingerprint"], r"^[0-9a-f]{64}$")
+
+    def test_legacy_standard_word_arrays_do_not_expand_xlsx_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_dir = self._source(root)
+            output_dir = root / "output"
+            result_dir = output_dir / "result"
+            result_dir.mkdir(parents=True)
+            records = [
+                {
+                    "id": "甲地.tsv:2",
+                    "原始汉字": "□",
+                    "原始注释": "~腰:脊背微駝",
+                    "来源文件": "甲地.tsv",
+                    "原始行号": 2,
+                },
+                {
+                    "id": "甲地.tsv:4",
+                    "原始汉字": "二",
+                    "原始注释": "又,門~:門栓",
+                    "来源文件": "甲地.tsv",
+                    "原始行号": 4,
+                },
+                {
+                    "id": "甲地.tsv:5",
+                    "原始汉字": "三",
+                    "原始注释": "单纯读音说明",
+                    "来源文件": "甲地.tsv",
+                    "原始行号": 5,
+                },
+            ]
+            cached_results = [
+                {
+                    "id": "甲地.tsv:2",
+                    "entries": [
+                        {
+                            "方言词": "䂿背脊",
+                            "标准词": ["砸背脊", "捶背脊"],
+                            "置信度": 0.9,
+                        }
+                    ],
+                    "input_fingerprint": _input_fingerprint(records[0]),
+                },
+                {
+                    "id": "甲地.tsv:4",
+                    "entries": [],
+                    "input_fingerprint": _input_fingerprint(records[1]),
+                },
+                {
+                    "id": "甲地.tsv:5",
+                    "entries": [],
+                    "input_fingerprint": _input_fingerprint(records[2]),
+                },
+            ]
+            (result_dir / "甲地.jsonl").write_text(
+                "\n".join(
+                    json.dumps(record, ensure_ascii=False)
+                    for record in cached_results
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            def fake_request(point, batch):
+                raise AssertionError("should reuse legacy cached JSONL")
+
+            run_analysis(
+                source_dir,
+                points=["甲地"],
+                batch_size=2,
+                workers=1,
+                output_dir=output_dir,
+                request_fn=fake_request,
+            )
+
+            workbook = load_workbook(output_dir / "xlsx" / "甲地.xlsx")
+            rows = list(workbook["词表"].iter_rows(min_row=2, values_only=True))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][0:2], ("砸背脊", "䂿背脊"))
+
+    def test_duplicate_dialect_words_are_moved_out_of_main_word_sheet(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            def fake_request(point, batch):
+                entries_by_id = {
+                    "甲地.tsv:2": [
+                        {"方言词": "同词", "标准词": "低分义", "置信度": 0.4}
+                    ],
+                    "甲地.tsv:4": [
+                        {"方言词": "同词", "标准词": "高分义", "置信度": 0.9}
+                    ],
+                    "甲地.tsv:5": [
+                        {"方言词": "另词", "标准词": "另一义", "置信度": 0.6}
+                    ],
+                }
+                return {
+                    "results": [
+                        {
+                            "id": item["id"],
+                            "entries": entries_by_id[item["id"]],
+                        }
+                        for item in batch
+                    ]
+                }
+
+            summary = run_analysis(
+                self._source(root),
+                points=["甲地"],
+                batch_size=3,
+                workers=1,
+                output_dir=root / "output",
+                request_fn=fake_request,
+            )
+
+            workbook = load_workbook(root / "output" / "xlsx" / "甲地.xlsx")
+            rows = list(workbook["词表"].iter_rows(min_row=2, values_only=True))
+            self.assertEqual(len(rows), 2)
+            self.assertIn(("高分义", "同词"), [row[0:2] for row in rows])
+            self.assertIn(("另一义", "另词"), [row[0:2] for row in rows])
+
+            duplicate_rows = list(
+                workbook["重复候选"].iter_rows(min_row=2, values_only=True)
+            )
+            self.assertEqual(len(duplicate_rows), 1)
+            self.assertEqual(duplicate_rows[0][0:2], ("低分义", "同词"))
+            self.assertEqual(summary["甲地"]["word_rows"], 2)
+            self.assertEqual(summary["甲地"]["duplicate_rows"], 1)
+
+    def test_duplicate_dialect_words_prefer_rows_with_standard_words(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            def fake_request(point, batch):
+                entries_by_id = {
+                    "甲地.tsv:2": [
+                        {"方言词": "同词", "标准词": "", "置信度": 1.0}
+                    ],
+                    "甲地.tsv:4": [
+                        {"方言词": "同词", "标准词": "有标准词", "置信度": 0.2}
+                    ],
+                    "甲地.tsv:5": [],
+                }
+                return {
+                    "results": [
+                        {
+                            "id": item["id"],
+                            "entries": entries_by_id[item["id"]],
+                        }
+                        for item in batch
+                    ]
+                }
+
+            run_analysis(
+                self._source(root),
+                points=["甲地"],
+                batch_size=3,
+                workers=1,
+                output_dir=root / "output",
+                request_fn=fake_request,
+            )
+
+            workbook = load_workbook(root / "output" / "xlsx" / "甲地.xlsx")
+            rows = list(workbook["词表"].iter_rows(min_row=2, values_only=True))
+            self.assertEqual(rows[0][0:2], ("有标准词", "同词"))
 
     def test_persists_completed_batches_when_a_later_batch_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
