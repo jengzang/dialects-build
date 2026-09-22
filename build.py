@@ -7,6 +7,8 @@ import textwrap
 
 
 from source.mcp_export import export_mcp_assets
+from source.extract_yindian import extract_yindian_records
+from common.config import PULL_YINDIAN_DIR
 
 # === argparse 格式化器 ===
 class SmartFormatter(
@@ -21,17 +23,27 @@ def main(args):
     args.type = args.type or []
     args.check = args.check or []
     mcp_branch = getattr(args, 'mcp_branch', 'master')
+    vocabulary = getattr(args, 'vocabulary', False)
+    note = getattr(args, 'note', False)
+    mcp_mode = getattr(args, 'mcp_mode', None)
 
     # deny 依赖 sheet；允许用户直接写 -c deny
     if 'deny' in args.check and 'sheet' not in args.check:
         args.check.insert(0, 'sheet')
 
-    if args.mcp_mode:
-        export_mcp_assets(args.mcp_mode, branch=mcp_branch)
+    if mcp_mode:
+        export_mcp_assets(mcp_mode, branch=mcp_branch)
 
-        # 单独使用 -m 时，只拉取音典数据，不继续写库或检查
-        if not args.type and not args.check:
-            return
+    if vocabulary or note:
+        extract_yindian_records(
+            PULL_YINDIAN_DIR,
+            vocabulary=vocabulary,
+            note=note,
+        )
+
+    # 单独使用拉取或提取参数时，不继续写库或检查
+    if (mcp_mode or vocabulary or note) and not args.type and not args.check:
+        return
 
     from source.check.sheet import run_sheet_check
     from source.check.match import run_match_check
@@ -81,7 +93,9 @@ def main(args):
     # 但避免：
     #   python build.py -c sheet          → 意外触发默认写库
     should_write_default = (
-        not args.mcp_mode
+        not mcp_mode
+        and not vocabulary
+        and not note
         and not args.type
         and not args.check
     )
@@ -190,6 +204,16 @@ def create_parser():
         default='master',
         metavar='BRANCH',
         help='指定 MCPDict 拉取分支：master 或 wip'
+    )
+    pull_group.add_argument(
+        '-v', '--vocabulary',
+        action='store_true',
+        help='提取汉字字段中的方框占位符记录，按地点输出到 data/raw/extract/vocabulary/'
+    )
+    pull_group.add_argument(
+        '-n', '--note',
+        action='store_true',
+        help='提取带解释或注释的记录，按地点输出到 data/raw/extract/note/'
     )
 
     # 要執行的處理功能（可多選）

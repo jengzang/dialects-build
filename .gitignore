@@ -31,6 +31,7 @@ data/yindian/*.tsv
 data/raw/pull_yindian/*.tsv
 data/raw/pull_yindian/.last_commit
 data/raw/all_yindian/
+data/raw/extract/
 data/raw/.git_cache/
 
 # Generated reports

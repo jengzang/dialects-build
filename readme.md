@@ -440,6 +440,7 @@ python build.py [選項]
 |------|------|------|
 | 用戶模式 | `-u, --user` | 指定寫入 admin 或 user 數據庫 |
 | 音典拉取 | `-m, --mcp, --yindian` | 從 MCPDict 拉取音典資料 |
+| 音典提取 | `-v, --vocabulary` / `-n, --note` | 按地点提取方框字表或带注释记录 |
 | 處理流程 | `-t, --type` | 轉換、寫庫、建查詢庫、同步等主流程 |
 | 檢查流程 | `-c, --check` | 字表變動、聲調欄、文件名匹配等檢查 |
 
@@ -471,6 +472,17 @@ python build.py [選項]
 | `diff` | 增量導出 TSV | 基於 `.last_commit` 拉取變更 |
 | `all` | 歷史 TSV 導出 | 遍歷歷史提交，按文件名保留最新 TSV，輸出到 `data/raw/all_yindian/` |
 | `all_sheet` | 歷史 xlsx 導出 | 導出歷史提交中的「漢字音典字表」xlsx 到 `data/raw/all_sheet/` |
+
+##### `-v, --vocabulary` 和 `-n, --note`：提取音典特殊记录
+
+这两个参数扫描 `data/raw/pull_yindian/` 中的音典 TSV，每个地点分别输出，不会合并地点，也不会修改原始文件：
+
+| 参数 | 提取内容 | 输出目录 |
+|------|----------|----------|
+| `-v, --vocabulary` | 汉字字段包含常见方框占位符的记录 | `data/raw/extract/vocabulary/` |
+| `-n, --note` | 解释或注释字段非空的记录 | `data/raw/extract/note/` |
+
+输出文件沿用原地点文件名和原始表头，没有匹配记录的地点不会生成空文件。带 `-m full` 或 `-m diff` 时，会在拉取完成后提取；不带 `-m` 时则直接使用当前已有的 `pull_yindian/` 文件。
 
 ##### `-t, --type`：處理流程（可多選）
 
@@ -532,6 +544,18 @@ python build.py -m full
 
 # 【拉取音典增量 TSV 後更新數據庫】
 python build.py -m diff -t update sync
+
+# 【拉取音典增量 TSV，并按地点提取方框字表】
+python build.py -m diff -v
+
+# 【拉取音典增量 TSV，并按地点提取带注释记录】
+python build.py -m diff -n
+
+# 【同时提取方框字表和带注释记录】
+python build.py -m diff -v -n
+
+# 【只使用现有 pull_yindian 数据进行提取】
+python build.py -v -n
 
 # 【只從 pull_yindian 目錄增量更新】
 python build.py -u admin -t update sync
