@@ -1,10 +1,10 @@
-# 音典特殊记录提取 Implementation Plan
+# 音典特殊记录与词表候选提取 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 为音典拉取流程增加按地点分文件的方框字表和带注释记录提取功能。
+**Goal:** 为音典拉取流程增加按地点分文件的方框字表、带注释记录和现代字表词语候选提取功能。
 
-**Architecture:** 保持 `source/mcp_export.py` 只负责拉取文件，新增 `source/extract_yindian.py` 负责扫描和筛选 TSV。`build.py` 解析 `-v/--vocabulary` 与 `-n/--note`，在拉取后或独立运行时调用提取器；输出目录和输入目录通过 `common.config` 常量集中定义。
+**Architecture:** 保持 `source/mcp_export.py` 只负责拉取文件，使用 `source/extract_yindian.py` 负责扫描和筛选 TSV。`build.py` 解析 `-v/--vocabulary`、`-n/--note` 与 `-w/--word`，在拉取后或独立运行时调用提取器；输出目录和输入目录通过 `common.config` 常量集中定义。词表候选只处理现代 `#漢字` 字表，输出 `~` 可恢复候选和普通注释待审查记录。
 
 **Tech Stack:** Python、argparse、标准库 `csv`/`shutil`/`pathlib`、unittest/pytest。
 
@@ -16,7 +16,7 @@
 - Create: `tests/test_extract_yindian.py`
 - Modify: `tests/test_build_mcp_mode.py`
 
-- [ ] **Step 1: Write the failing extractor test**
+- [x] **Step 1: Write the failing extractor test**
 
 Create temporary `pull_yindian/` input files with rows containing `□`, `■`, `☑`, a normal character, and both populated and blank explanation fields. Assert that:
 
@@ -31,7 +31,7 @@ extract_yindian_records(
 
 creates one output file per matching source location under `vocabulary/` and `note/`, preserves the header and original columns, excludes unmatched rows, and does not create a file for a location with no matches.
 
-- [ ] **Step 2: Run the focused test and verify it fails**
+- [x] **Step 2: Run the focused test and verify it fails**
 
 Run:
 
@@ -41,7 +41,7 @@ pytest -q tests/test_extract_yindian.py
 
 Expected: FAIL because `source.extract_yindian` and `extract_yindian_records` do not yet exist.
 
-- [ ] **Step 3: Add CLI tests**
+- [x] **Step 3: Add CLI tests**
 
 Extend `tests/test_build_mcp_mode.py` to assert:
 
@@ -53,7 +53,7 @@ assert args.note is True
 
 Also invoke `build.main()` with only `vocabulary=True` while mocking the extractor and `write_to_sql`; assert the extractor is called and the default database writer is not called.
 
-- [ ] **Step 4: Run the focused CLI test and verify the expected failure**
+- [x] **Step 4: Run the focused CLI test and verify the expected failure**
 
 Run:
 
@@ -69,7 +69,7 @@ Expected: FAIL because the parser and `main()` do not yet define or dispatch the
 - Modify: `common/config.py`
 - Create: `source/extract_yindian.py`
 
-- [ ] **Step 1: Add output path constants**
+- [x] **Step 1: Add output path constants**
 
 Add `EXTRACT_YINDIAN_DIR`, `VOCABULARY_EXTRACT_DIR`, and `NOTE_EXTRACT_DIR` under the existing MCP pull path constants:
 
@@ -79,7 +79,7 @@ VOCABULARY_EXTRACT_DIR = EXTRACT_YINDIAN_DIR / "vocabulary"
 NOTE_EXTRACT_DIR = EXTRACT_YINDIAN_DIR / "note"
 ```
 
-- [ ] **Step 2: Implement the extractor**
+- [x] **Step 2: Implement the extractor**
 
 Implement:
 
@@ -107,7 +107,7 @@ The function must:
 9. Skip empty result files.
 10. Return counts keyed by output mode and source filename for testable reporting.
 
-- [ ] **Step 3: Run the extractor tests and verify they pass**
+- [x] **Step 3: Run the extractor tests and verify they pass**
 
 Run:
 
@@ -123,7 +123,7 @@ Expected: PASS.
 - Modify: `build.py`
 - Modify: `tests/test_build_mcp_mode.py`
 
-- [ ] **Step 1: Add parser options**
+- [x] **Step 1: Add parser options**
 
 Add boolean flags in the MCP pull argument group:
 
@@ -140,15 +140,15 @@ pull_group.add_argument(
 )
 ```
 
-- [ ] **Step 2: Dispatch extraction at the correct point**
+- [x] **Step 2: Dispatch extraction at the correct point**
 
 After `export_mcp_assets()` returns, call `extract_yindian_records()` when either flag is enabled. When no MCP mode is supplied, call it against the existing pull directory. Use `getattr()` for the new fields in `main()` so existing programmatic callers without those attributes remain compatible.
 
-- [ ] **Step 3: Prevent accidental default database writes**
+- [x] **Step 3: Prevent accidental default database writes**
 
 Update the default-write predicate so `python build.py -v`, `python build.py -n`, and `python build.py -v -n` perform extraction only and do not call `write_to_sql()`.
 
-- [ ] **Step 4: Run the CLI tests**
+- [x] **Step 4: Run the CLI tests**
 
 Run:
 
@@ -158,23 +158,111 @@ pytest -q tests/test_build_mcp_mode.py
 
 Expected: PASS.
 
-### Task 4: Update user documentation
+### Task 4: Add modern word-list candidate extraction
+
+**Files:**
+- Modify: `source/extract_yindian.py`
+- Modify: `common/config.py`
+- Modify: `tests/test_extract_yindian.py`
+
+- [x] **Step 1: Write failing tests for candidate extraction**
+
+Add a temporary source directory containing:
+
+```text
+#漢字  音標  解釋
+㗦      lu4  ~嘈,吵鬧
+□       sɔ1  ~腰:脊背微駝
+一       i1   这条注释没有占位符，但保留待审查
+```
+
+Also add `#詞語`/historical filenames with notes. Assert that `extract_yindian_words()` writes only the eligible location file, produces columns
+`标准词、方言词、音标、注释、type、原始汉字、来源文件、原始行号`, replaces every `~`/`～` for `tilde`, leaves `标准词` empty, leaves `方言词` empty for `note`, and skips `固原`/historical/dictionary files.
+
+- [x] **Step 2: Run the focused test and verify it fails**
+
+Run:
+
+```bash
+pytest -q tests/test_extract_yindian.py -k word
+```
+
+Expected: FAIL because the word extractor and output constant do not yet exist.
+
+- [x] **Step 3: Implement the candidate extractor**
+
+Add a focused function that:
+
+1. Clears only the word output directory.
+2. Skips filenames beginning with a four-digit year or matching the historical/dictionary/non-dialect exclusion terms and `固原`.
+3. Requires a `#漢字`/`#汉字` header, so `#詞語` files never enter.
+4. Emits every non-empty note row.
+5. Replaces all `~` and `～` markers with the raw hanzi for `type=tilde`.
+6. Emits `type=note` and an empty dialect word when no marker exists.
+7. Writes one UTF-8 TSV per source location with source filename and one-based source row number.
+
+- [x] **Step 4: Run the focused tests**
+
+Run:
+
+```bash
+pytest -q tests/test_extract_yindian.py -k word
+```
+
+Expected: PASS.
+
+### Task 5: Wire the word flag into `build.py`
+
+**Files:**
+- Modify: `build.py`
+- Modify: `tests/test_build_mcp_mode.py`
+
+- [x] **Step 1: Add parser and dispatch tests**
+
+Assert `parser.parse_args(["-w"])` sets `word=True`, and a programmatic call with only `word=True` calls the word extractor without entering the default database-writing path.
+
+- [x] **Step 2: Run the focused CLI tests and verify they fail**
+
+Run:
+
+```bash
+pytest -q tests/test_build_mcp_mode.py -k word
+```
+
+Expected: FAIL because `build.py` does not yet expose or dispatch `-w`.
+
+- [x] **Step 3: Wire the flag**
+
+Call the word extractor after a requested MCP export or against the existing `pull_yindian` directory, and include `word` in the early-return and default-write guards.
+
+- [x] **Step 4: Run the focused CLI tests**
+
+Run:
+
+```bash
+pytest -q tests/test_build_mcp_mode.py -k word
+```
+
+Expected: PASS.
+
+### Task 6: Update user documentation and verify real data
 
 **Files:**
 - Modify: `readme.md`
 
-- [ ] **Step 1: Document the two flags**
+- [x] **Step 1: Document the two flags**
 
-Add both flags to the command-line parameter table, explain the two output directories, and add examples:
+Add all three flags to the command-line parameter table, explain the three output directories, document `type=tilde`/`type=note`, and add examples:
 
 ```bash
 python build.py -m diff -v
 python build.py -m diff -n
 python build.py -m diff -v -n
 python build.py -v
+python build.py -w
 ```
 
-- [ ] **Step 2: Run the complete test suite**
+- [x] **Step 2: Run focused and complete tests**
 
 Run:
 
@@ -184,12 +272,49 @@ pytest -q
 
 Expected: all existing and new tests pass.
 
-- [ ] **Step 3: Run a real sample extraction**
+- [x] **Step 3: Run a real sample extraction through the main entry**
 
 Run:
 
 ```bash
-python build.py -v -n
+python3 build.py -w
 ```
 
-Verify that `data/raw/extract/vocabulary/` and `data/raw/extract/note/` contain separate per-location TSV files and that `data/raw/pull_yindian/` is unchanged.
+Verify that `data/raw/extract/word/` contains separate per-location TSV files, excluded sources are absent, and `data/raw/pull_yindian/` is unchanged.
+
+### Task 7: Analyze complete selected points with an independent DeepSeek script
+
+**Files:**
+- Add: `scripts/yindian_llm.py`
+- Add: `tests/test_yindian_llm.py`
+- Modify: `readme.md`
+- Modify: `docs/superpowers/specs/2026-09-22-yindian-row-extract-design.md`
+
+- [x] **Step 1: Run the independent command**
+
+```bash
+python3 scripts/yindian_llm.py run \
+  --points 泉州,蘇州東村,南寧 \
+  --batch-size 20 \
+  --workers 4 \
+  --reset
+```
+
+The command reads the original `#漢字` TSV for the selected points, sends every
+non-empty annotated row, and writes input JSONL, result JSONL, and final XLSX
+files under `data/raw/extract/word_llm/`. It does not use `build.py` or the
+mechanically generated `word/` files.
+The script reads `DEEPSEEK_API_KEY` from the environment or the project-root
+`.env` file, including the existing `deepseek-api-key` spelling.
+
+- [x] **Step 2: Verify complete input coverage**
+
+Read each point's `逐行结果` sheet and verify every selected point has one row
+for every non-empty annotated source row, with no audio or mechanical candidate
+fields sent to the model.
+
+- [x] **Step 3: Verify the final deliverables**
+
+Open each point's XLSX and verify it contains `词表` and `逐行结果` sheets.
+Every generated word row must retain the original explanation and source
+provenance; rows without a usable word must remain in `逐行结果`.

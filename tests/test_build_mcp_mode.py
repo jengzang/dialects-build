@@ -34,6 +34,23 @@ class BuildMainMcpModeTests(unittest.TestCase):
 
         extract.assert_called_once()
 
+    def test_word_only_dispatches_word_extraction_without_default_database_write(self):
+        args = argparse.Namespace(
+            mcp_mode=None,
+            mcp_branch='master',
+            type=[],
+            check=[],
+            user='admin',
+            vocabulary=False,
+            note=False,
+            word=True,
+        )
+
+        with mock.patch('build.extract_yindian_words') as extract:
+            build.main(args)
+
+        extract.assert_called_once()
+
     def test_all_sheet_mode_dispatches_to_export_module_and_returns_without_type(self):
         args = argparse.Namespace(
             mcp_mode='all_sheet',

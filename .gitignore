@@ -13,6 +13,9 @@ build/
 venv/
 ENV/
 
+# Local secrets
+.env
+
 # IDE
 .idea/
 .vscode/

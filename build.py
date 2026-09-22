@@ -7,7 +7,10 @@ import textwrap
 
 
 from source.mcp_export import export_mcp_assets
-from source.extract_yindian import extract_yindian_records
+from source.extract_yindian import (
+    extract_yindian_records,
+    extract_yindian_words,
+)
 from common.config import PULL_YINDIAN_DIR
 
 # === argparse 格式化器 ===
@@ -25,6 +28,7 @@ def main(args):
     mcp_branch = getattr(args, 'mcp_branch', 'master')
     vocabulary = getattr(args, 'vocabulary', False)
     note = getattr(args, 'note', False)
+    word = getattr(args, 'word', False)
     mcp_mode = getattr(args, 'mcp_mode', None)
 
     # deny 依赖 sheet；允许用户直接写 -c deny
@@ -40,9 +44,10 @@ def main(args):
             vocabulary=vocabulary,
             note=note,
         )
-
+    if word:
+        extract_yindian_words(PULL_YINDIAN_DIR)
     # 单独使用拉取或提取参数时，不继续写库或检查
-    if (mcp_mode or vocabulary or note) and not args.type and not args.check:
+    if (mcp_mode or vocabulary or note or word) and not args.type and not args.check:
         return
 
     from source.check.sheet import run_sheet_check
@@ -96,6 +101,7 @@ def main(args):
         not mcp_mode
         and not vocabulary
         and not note
+        and not word
         and not args.type
         and not args.check
     )
@@ -215,7 +221,11 @@ def create_parser():
         action='store_true',
         help='提取带解释或注释的记录，按地点输出到 data/raw/extract/note/'
     )
-
+    pull_group.add_argument(
+        '-w', '--word',
+        action='store_true',
+        help='从现代#漢字字表提取词表候选，按地点输出到 data/raw/extract/word/'
+    )
     # 要執行的處理功能（可多選）
     task_group = parser.add_argument_group('处理流程')
     task_group.add_argument(

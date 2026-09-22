@@ -440,7 +440,7 @@ python build.py [選項]
 |------|------|------|
 | 用戶模式 | `-u, --user` | 指定寫入 admin 或 user 數據庫 |
 | 音典拉取 | `-m, --mcp, --yindian` | 從 MCPDict 拉取音典資料 |
-| 音典提取 | `-v, --vocabulary` / `-n, --note` | 按地点提取方框字表或带注释记录 |
+| 音典提取 | `-v, --vocabulary` / `-n, --note` / `-w, --word` | 按地点提取方框字表、带注释记录或机械词表候选 |
 | 處理流程 | `-t, --type` | 轉換、寫庫、建查詢庫、同步等主流程 |
 | 檢查流程 | `-c, --check` | 字表變動、聲調欄、文件名匹配等檢查 |
 
@@ -473,16 +473,68 @@ python build.py [選項]
 | `all` | 歷史 TSV 導出 | 遍歷歷史提交，按文件名保留最新 TSV，輸出到 `data/raw/all_yindian/` |
 | `all_sheet` | 歷史 xlsx 導出 | 導出歷史提交中的「漢字音典字表」xlsx 到 `data/raw/all_sheet/` |
 
-##### `-v, --vocabulary` 和 `-n, --note`：提取音典特殊记录
+##### `-v, --vocabulary`、`-n, --note` 和 `-w, --word`：提取音典特殊记录与词表候选
 
-这两个参数扫描 `data/raw/pull_yindian/` 中的音典 TSV，每个地点分别输出，不会合并地点，也不会修改原始文件：
+这些参数扫描音典 TSV，每个地点分别输出，不会合并地点，也不会修改原始文件：
 
 | 参数 | 提取内容 | 输出目录 |
 |------|----------|----------|
 | `-v, --vocabulary` | 汉字字段包含常见方框占位符的记录 | `data/raw/extract/vocabulary/` |
 | `-n, --note` | 解释或注释字段非空的记录 | `data/raw/extract/note/` |
+| `-w, --word` | 现代 `#漢字` 字表中的词表候选 | `data/raw/extract/word/` |
 
 输出文件沿用原地点文件名和原始表头，没有匹配记录的地点不会生成空文件。带 `-m full` 或 `-m diff` 时，会在拉取完成后提取；不带 `-m` 时则直接使用当前已有的 `pull_yindian/` 文件。
+
+`-w, --word` 只处理真正的 `#漢字`/`#汉字` 字表，不处理 `#詞語` 词语表；文件名以四位年份开头，或包含 `清末`、历史音、上古/中古、字典、韵书及其他非方言材料标识的文件，以及固原，会被排除。
+
+词表候选文件列为：
+
+```text
+标准词    方言词    音标    注释    type    原始汉字    来源文件    原始行号
+```
+
+`标准词`第一版留空。注释含 `~` 或 `～` 的记录标为 `type=tilde`，会将标记替换为原始汉字；冒号、逗号、分号前的多个候选会分别输出。其他带注释记录标为 `type=note`，完整保留注释但不擅自猜测方言词，供后续人工或 LLM 审查。
+
+#### 独立 LLM 词表分析：`scripts/yindian_llm.py`
+
+LLM 词表分析是独立流程，不属于 `build.py`，也不会修改原有数据库处理流程。脚本直接读取
+`data/raw/pull_yindian/` 中指定地点的原始 `#漢字` 字表，把所有带注释行逐行交给 DeepSeek。
+请求可以按 batch 发送，但每条记录都有独立 `id`，LLM 必须独立判断，不能借用同一批次其他行的信息。
+
+发送给 LLM 的字段只有：
+
+```text
+id、原始汉字、原始注释、来源文件、原始行号
+```
+
+不发送音标，也不发送 `-w` 生成的机械候选。LLM 只返回方言词、标准词候选和置信度；
+音标由 XLSX 保留原字音标列，LLM 不负责猜测。无论是否形成词条，原始行都会保留在
+`逐行结果` sheet 中。
+
+项目根目录的 `.env` 可以直接保存 DeepSeek key，脚本会自动读取
+`DEEPSEEK_API_KEY` 或兼容的 `deepseek-api-key`；也可以通过环境变量覆盖。`.env` 不要提交到 Git。
+
+```bash
+python3 scripts/yindian_llm.py run \
+  --points 泉州,蘇州東村,南寧 \
+  --batch-size 20 \
+  --workers 4 \
+  --reset
+```
+
+默认输出到 `data/raw/extract/word_llm/`，每个地点独立生成：
+
+```text
+data/raw/extract/word_llm/
+├── input/<地点>.jsonl
+├── result/<地点>.jsonl
+├── result/<地点>.errors.jsonl
+├── xlsx/<地点>.xlsx
+└── manifest.json
+```
+
+最终交付文件是 `xlsx/<地点>.xlsx`。每个 XLSX 有 `词表` 和 `逐行结果` 两个 sheet，
+词表包含标准词、方言词、音标、释义、类别、置信度以及原始数据来源列。
 
 ##### `-t, --type`：處理流程（可多選）
 
@@ -554,8 +606,14 @@ python build.py -m diff -n
 # 【同时提取方框字表和带注释记录】
 python build.py -m diff -v -n
 
+# 【拉取后提取词表候选】
+python build.py -m diff -w
+
 # 【只使用现有 pull_yindian 数据进行提取】
 python build.py -v -n
+
+# 【只使用现有 pull_yindian 数据提取词表候选】
+python build.py -w
 
 # 【只從 pull_yindian 目錄增量更新】
 python build.py -u admin -t update sync
