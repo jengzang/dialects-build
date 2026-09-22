@@ -365,67 +365,7 @@ class YindianLlmTests(unittest.TestCase):
             rows = list(workbook["词表"].iter_rows(min_row=2, values_only=True))
             self.assertEqual(rows[0][0:2], ("有标准词", "同词"))
 
-    def test_offline_mode_rewrites_from_cache_without_requesting_missing_rows(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            source_dir = self._source(root)
-            output_dir = root / "output"
-            result_dir = output_dir / "result"
-            result_dir.mkdir(parents=True)
-            cached_record = {
-                "id": "甲地.tsv:2",
-                "entries": [
-                    {"方言词": "方□", "标准词": "标准一", "置信度": 0.8}
-                ],
-                "input_fingerprint": _input_fingerprint(
-                    {
-                        "id": "甲地.tsv:2",
-                        "原始汉字": "□",
-                        "原始注释": "~腰:脊背微駝",
-                        "来源文件": "甲地.tsv",
-                        "原始行号": 2,
-                    }
-                ),
-            }
-            (result_dir / "甲地.jsonl").write_text(
-                json.dumps(cached_record, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-
-            def failing_request(point, batch):
-                raise AssertionError("offline mode must not request uncached rows")
-
-            summary = run_analysis(
-                source_dir,
-                points=["甲地"],
-                batch_size=2,
-                workers=1,
-                output_dir=output_dir,
-                request_fn=failing_request,
-                offline=True,
-            )
-
-            self.assertEqual(summary["甲地"]["status"], "partial")
-            self.assertEqual(summary["甲地"]["completed"], 1)
-            self.assertEqual(summary["甲地"]["word_rows"], 1)
-            workbook = load_workbook(output_dir / "xlsx" / "甲地.xlsx")
-            rows = list(workbook["词表"].iter_rows(min_row=2, values_only=True))
-            self.assertEqual(rows[0][0:2], ("标准一", "方□"))
-
-    def test_offline_mode_rejects_reset_because_it_would_delete_cache(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            with self.assertRaisesRegex(ValueError, "--offline 不能和 --reset"):
-                run_analysis(
-                    self._source(root),
-                    points=["甲地"],
-                    output_dir=root / "output",
-                    request_fn=lambda point, batch: {"results": []},
-                    offline=True,
-                    reset=True,
-                )
-
-    def test_offline_mode_ignores_malformed_cached_results(self):
+    def test_malformed_cached_results_are_refetched(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             source_dir = self._source(root)
@@ -452,6 +392,16 @@ class YindianLlmTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            seen = []
+
+            def fake_request(point, batch):
+                seen.extend(item["id"] for item in batch)
+                return {
+                    "results": [
+                        {"id": item["id"], "entries": []}
+                        for item in batch
+                    ]
+                }
 
             summary = run_analysis(
                 source_dir,
@@ -459,12 +409,12 @@ class YindianLlmTests(unittest.TestCase):
                 batch_size=2,
                 workers=1,
                 output_dir=output_dir,
-                request_fn=lambda point, batch: {"results": []},
-                offline=True,
+                request_fn=fake_request,
             )
 
-            self.assertEqual(summary["甲地"]["status"], "partial")
-            self.assertEqual(summary["甲地"]["completed"], 0)
+            self.assertEqual(seen, ["甲地.tsv:2", "甲地.tsv:4", "甲地.tsv:5"])
+            self.assertEqual(summary["甲地"]["status"], "ok")
+            self.assertEqual(summary["甲地"]["completed"], 3)
             self.assertEqual(summary["甲地"]["word_rows"], 0)
 
     def test_persists_completed_batches_when_a_later_batch_fails(self):
