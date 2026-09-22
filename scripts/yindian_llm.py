@@ -26,6 +26,7 @@ DEFAULT_SOURCE_DIR = PROJECT_ROOT / "data" / "raw" / "pull_yindian"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "raw" / "extract" / "word_llm"
 DEFAULT_POINTS = ("泉州", "蘇州東村", "南寧")
 API_URL = "https://api.deepseek.com/chat/completions"
+PROMPT_VERSION = "2026-09-22-tilde-reconstruction-v2"
 
 HANZI_HEADERS = frozenset({"漢字", "汉字"})
 NOTE_HEADERS = frozenset({"解釋", "解释", "注釋", "注释", "notes", "note"})
@@ -39,9 +40,17 @@ PROMPT = """你是汉语方言词汇整理者。请逐条独立分析输入数�
 2. 为每个方言词提供现代标准汉语词候选；
 3. 给每个方言词一个 0 到 1 的置信度。
 
-纯读音、文白读、又音、字形、本字、俗字或音韵说明，如果不能形成明确词语，返回空 entries。
-不要猜测音标，不要输出音标，不要把解释文字硬拼成方言词。
-一行可以有多个方言词；一个方言词可以有多个标准词候选。
+重要规则：
+1. `~` 或 `～` 是音典注释中的占位符，表示本行的“原始汉字”，不是省略号，也不能忽略。
+2. 每出现一个占位符，都要把它替换成原始汉字，并保留它所在的完整词语或短语。注释中的 `~背脊` 且原始汉字为 `䂿` 时，方言词必须写成 `䂿背脊`，不能只输出 `䂿`。
+3. 真实案例：原始汉字为 `䂿`、原始注释为 `(白)砸、捶,~背脊,俗字撘` 时，至少返回
+   `{"方言词":"䂿背脊","标准词":["砸背脊","捶背脊"],"置信度":0.9}`。
+   如果同一行还明确说明原始汉字单独成词，可以另外返回单字词，但不能遗漏 `䂿背脊`。
+4. 括号中的“白”“文”“又”等是读法或用法标签，不是词语本身；“俗字、本字、字形”说明不是词条，除非同一行明确给出完整词语。
+5. 逗号、分号等可能分隔多个义项或词语。不要因为一个原始汉字可以解释为某个标准词，就丢掉注释中由占位符明确写出的更长方言词。
+6. 纯读音、文白读、又音或音韵说明，如果不能形成明确词语，返回空 entries。
+7. 不要猜测音标，不要输出音标；也不要凭空把注释中没有表达的文字拼成词。但按上述占位符规则还原出来的完整词语不是猜测，必须保留。
+8. 一行可以有多个方言词；一个方言词可以有多个标准词候选。标准词应与该完整方言词的意义对应。
 
 只返回 JSON 对象：
 {"results":[
@@ -183,8 +192,11 @@ def _public_input(record: dict[str, Any]) -> dict[str, Any]:
 
 def _input_fingerprint(record: dict[str, Any]) -> str:
     payload = {
-        key: record[key]
-        for key in ("id", "原始汉字", "原始注释", "来源文件", "原始行号")
+        "prompt_version": PROMPT_VERSION,
+        **{
+            key: record[key]
+            for key in ("id", "原始汉字", "原始注释", "来源文件", "原始行号")
+        },
     }
     encoded = json.dumps(
         payload,

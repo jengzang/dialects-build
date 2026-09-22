@@ -5,7 +5,13 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from scripts.yindian_llm import _load_api_key, run_analysis
+from scripts.yindian_llm import (
+    PROMPT,
+    PROMPT_VERSION,
+    _input_fingerprint,
+    _load_api_key,
+    run_analysis,
+)
 
 
 class YindianLlmTests(unittest.TestCase):
@@ -34,6 +40,32 @@ class YindianLlmTests(unittest.TestCase):
                 _load_api_key(dotenv_path=dotenv_path),
                 "test-secret",
             )
+
+    def test_prompt_requires_expanding_tilde_into_the_original_character(self):
+        self.assertIn("`~` 或 `～` 是音典注释中的占位符", PROMPT)
+        self.assertIn("䂿背脊", PROMPT)
+        self.assertIn("不能只输出 `䂿`", PROMPT)
+        self.assertIn('"置信度":0.9', PROMPT)
+        self.assertNotIn("不要把解释文字硬拼成方言词", PROMPT)
+
+    def test_prompt_version_is_part_of_cached_result_fingerprint(self):
+        record = {
+            "id": "南寧.tsv:195",
+            "原始汉字": "䂿",
+            "原始注释": "(白)砸、捶,~背脊,俗字撘",
+            "来源文件": "南寧.tsv",
+            "原始行号": 195,
+        }
+
+        current_fingerprint = _input_fingerprint(record)
+        original_version = PROMPT_VERSION
+        try:
+            import scripts.yindian_llm as yindian_llm
+
+            yindian_llm.PROMPT_VERSION = "different-prompt"
+            self.assertNotEqual(current_fingerprint, _input_fingerprint(record))
+        finally:
+            yindian_llm.PROMPT_VERSION = original_version
 
     def test_sends_each_annotated_row_without_audio_or_mechanical_candidates(self):
         with tempfile.TemporaryDirectory() as tmpdir:
