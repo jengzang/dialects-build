@@ -435,18 +435,34 @@ def _load_done(result_path: Path) -> dict[str, dict[str, Any]]:
         if not isinstance(record, dict) or not record.get("id"):
             continue
         entries = record.get("entries")
-        if isinstance(entries, list):
-            normalized_entries = []
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                normalized_entries.append(
-                    {
-                        **entry,
-                        "标准词": _standard_word(entry.get("标准词", "")),
-                    }
-                )
-            record = {**record, "entries": normalized_entries}
+        if not isinstance(entries, list):
+            continue
+        normalized_entries = []
+        invalid_entry = False
+        for entry in entries:
+            if not isinstance(entry, dict):
+                invalid_entry = True
+                break
+            dialect_word = str(entry.get("方言词", "")).strip()
+            confidence = entry.get("置信度")
+            if (
+                not dialect_word
+                or not isinstance(confidence, (int, float))
+                or not 0 <= confidence <= 1
+            ):
+                invalid_entry = True
+                break
+            normalized_entries.append(
+                {
+                    **entry,
+                    "方言词": dialect_word,
+                    "标准词": _standard_word(entry.get("标准词", "")),
+                    "置信度": confidence,
+                }
+            )
+        if invalid_entry:
+            continue
+        record = {**record, "entries": normalized_entries}
         done[record["id"]] = record
     return done
 
@@ -569,10 +585,13 @@ def run_analysis(
     api_key: Optional[str] = None,
     model: str = "deepseek-chat",
     reset: bool = False,
+    offline: bool = False,
 ) -> dict[str, dict[str, int | str]]:
     if batch_size <= 0 or workers <= 0:
         raise ValueError("batch_size 和 workers 必须大于 0")
-    if request_fn is None:
+    if offline and reset:
+        raise ValueError("--offline 不能和 --reset 同时使用；离线模式需要保留已有缓存")
+    if request_fn is None and not offline:
         api_key = _load_api_key(api_key)
         if not api_key:
             raise RuntimeError(
@@ -618,10 +637,12 @@ def run_analysis(
             for record in public_records
             if record["id"] not in done
         ]
-        batches = [
-            pending[index:index + batch_size]
-            for index in range(0, len(pending), batch_size)
-        ]
+        batches = []
+        if not offline:
+            batches = [
+                pending[index:index + batch_size]
+                for index in range(0, len(pending), batch_size)
+            ]
 
         def request_batch(batch: list[dict[str, Any]]):
             if request_fn is not None:
@@ -738,6 +759,11 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--model", default="deepseek-chat")
     parser.add_argument("--reset", action="store_true", help="清空本次输出后重新运行")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="只使用已有 result JSONL 缓存重写 XLSX，不请求 DeepSeek",
+    )
     args = parser.parse_args()
 
     summary = run_analysis(
@@ -748,6 +774,7 @@ def main() -> None:
         output_dir=args.output_dir,
         model=args.model,
         reset=args.reset,
+        offline=args.offline,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     if any(item["status"] != "ok" for item in summary.values()):
